@@ -2,7 +2,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/functions.cmake)
 
 # If set, indicates that this is not an officially supported release
 # Keep in sync with IsPrerelease in Directory.Build.props
-set(PRERELEASE 1)
+set(PRERELEASE 0)
 
 #----------------------------------------
 # Detect and set platform variable names
@@ -36,7 +36,7 @@ if(CLR_CMAKE_HOST_OS STREQUAL Linux)
         # "amd64" string. Accept either of the two here.
         if(CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64 OR CMAKE_SYSTEM_PROCESSOR STREQUAL amd64)
             set(CLR_CMAKE_HOST_UNIX_AMD64 1)
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL armv7l)
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL armv7l OR CMAKE_SYSTEM_PROCESSOR STREQUAL armv8l)
             set(CLR_CMAKE_HOST_UNIX_ARM 1)
             set(CLR_CMAKE_HOST_UNIX_ARMV7L 1)
         elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL arm OR CMAKE_SYSTEM_PROCESSOR STREQUAL armv7-a)

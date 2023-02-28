@@ -6,6 +6,7 @@ include(CheckTypeSize)
 include(CheckStructHasMember)
 include(CheckSymbolExists)
 include(CheckCCompilerFlag)
+include(CheckCSourceCompiles)
 
 # Apple platforms like macOS/iOS allow targeting older operating system versions with a single SDK,
 # the mere presence of a symbol in the SDK doesn't tell us whether the deployment target really supports it.
@@ -79,6 +80,21 @@ ac_check_funcs (
   gethrtime read_real_time gethostbyname gethostbyname2 getnameinfo getifaddrs
   access inet_ntop Qp2getifaddrs)
 
+check_c_source_compiles(
+  "
+  #include <zlib.h>
+  int main(void)
+  {
+    #if defined(ZLIB_VERNUM) && (ZLIB_VERNUM >= 0x1230)
+    #else
+    #error No good zlib found
+    #endif
+    return 0;
+  }
+  "
+  HAVE_SYS_ZLIB)
+
+
 if(NOT HOST_DARWIN)
   # getentropy was introduced in macOS 10.12 / iOS 10.0
   ac_check_funcs (getentropy)
@@ -113,11 +129,46 @@ check_struct_has_member("struct sockaddr_in6" sin6_len "netinet/in.h" HAVE_SOCKA
 check_struct_has_member("struct stat" st_atim "sys/types.h;sys/stat.h;unistd.h" HAVE_STRUCT_STAT_ST_ATIM)
 check_struct_has_member("struct stat" st_atimespec "sys/types.h;sys/stat.h;unistd.h" HAVE_STRUCT_STAT_ST_ATIMESPEC)
 
+if (HOST_DARWIN)
+  check_struct_has_member("struct objc_super" super_class "objc/runtime.h;objc/message.h" HAVE_OBJC_SUPER_SUPER_CLASS)
+endif()
+
 check_type_size("int" SIZEOF_INT)
 check_type_size("void*" SIZEOF_VOID_P)
 check_type_size("long" SIZEOF_LONG)
 check_type_size("long long" SIZEOF_LONG_LONG)
 check_type_size("size_t" SIZEOF_SIZE_T)
+
+if (HOST_LINUX OR HOST_ANDROID)
+  set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+endif()
+
+check_c_source_compiles(
+  "
+  #include <string.h>
+  int main(void)
+  {
+    char buffer[1];
+    char c = *strerror_r(0, buffer, 0);
+    return 0;
+  }
+  "
+  HAVE_GNU_STRERROR_R)
+
+check_c_source_compiles(
+  "
+  #include <sched.h>
+  int main(void)
+  {
+    CPU_COUNT((void *) 0);
+    return 0;
+  }
+  "
+  HAVE_GNU_CPU_COUNT)
+
+if (HOST_LINUX OR HOST_ANDROID)
+  set(CMAKE_REQUIRED_DEFINITIONS)
+endif()
 
 # ICONV
 set(ICONV_LIB)
@@ -125,14 +176,6 @@ find_library(LIBICONV_FOUND iconv)
 if(NOT LIBICONV_FOUND STREQUAL "LIBICONV_FOUND-NOTFOUND")
   set(ICONV_LIB "iconv")
 endif()
-
-file(WRITE ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/test.c
-  "#include <sched.h>\n"
-  "void main () { CPU_COUNT((void *) 0); }\n"
-)
-try_compile(GLIBC_HAS_CPU_COUNT ${CMAKE_BINARY_DIR}/CMakeTmp SOURCES "${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/test.c"
-    COMPILE_DEFINITIONS "-D_GNU_SOURCE")
-
 
 if(HOST_WIN32)
   # checking for this doesn't work for some reason, hardcode result

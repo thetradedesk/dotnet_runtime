@@ -85,7 +85,6 @@ SET_DEFAULT_DEBUG_CHANNEL(PROCESS); // some headers have code with asserts, so d
 #include <libproc.h>
 #include <sys/sysctl.h>
 #include <sys/posix_sem.h>
-#if defined(HOST_ARM64)
 #include <mach/task.h>
 #include <mach/vm_map.h>
 extern "C"
@@ -103,7 +102,6 @@ extern "C"
         }                                                                   \
     } while (false)
 
-#endif // defined(HOST_ARM64)
 #endif // __APPLE__
 
 #ifdef __NetBSD__
@@ -3124,10 +3122,9 @@ PROCBuildCreateDumpCommandLine(
     std::vector<const char*>& argv,
     char** pprogram,
     char** ppidarg,
-    char* dumpName,
-    char* dumpType,
-    BOOL diag,
-    BOOL crashReport)
+    const char* dumpName,
+    const char* dumpType,
+    ULONG32 flags)
 {
     if (g_szCoreCLRPath == nullptr)
     {
@@ -3190,12 +3187,17 @@ PROCBuildCreateDumpCommandLine(
         }
     }
 
-    if (diag)
+    if (flags & GenerateDumpFlagsLoggingEnabled)
     {
         argv.push_back("--diag");
     }
 
-    if (crashReport)
+    if (flags & GenerateDumpFlagsVerboseLoggingEnabled)
+    {
+        argv.push_back("--verbose");
+    }
+
+    if (flags & GenerateDumpFlagsCrashReportEnabled)
     {
         argv.push_back("--crashreport");
     }
@@ -3284,12 +3286,26 @@ PROCAbortInitialize()
         char* dumpType = getenv("COMPlus_DbgMiniDumpType");
         char* diagStr = getenv("COMPlus_CreateDumpDiagnostics");
         BOOL diag = diagStr != nullptr && strcmp(diagStr, "1") == 0;
+        char* verboseStr = getenv("COMPlus_CreateDumpVerboseDiagnostics");
+        BOOL verbose = verboseStr != nullptr && strcmp(verboseStr, "1") == 0;
         char* crashReportStr = getenv("COMPlus_EnableCrashReport");
         BOOL crashReport = crashReportStr != nullptr && strcmp(crashReportStr, "1") == 0;
-
+        ULONG32 flags = GenerateDumpFlagsNone;
+        if (diag)
+        {
+            flags |= GenerateDumpFlagsLoggingEnabled;
+        }
+        if (verbose)
+        {
+            flags |= GenerateDumpFlagsVerboseLoggingEnabled;
+        }
+        if (crashReport)
+        {
+            flags |= GenerateDumpFlagsCrashReportEnabled;
+        }
         char* program = nullptr;
         char* pidarg = nullptr;
-        if (!PROCBuildCreateDumpCommandLine(g_argvCreateDump, &program, &pidarg, dumpName, dumpType, diag, crashReport))
+        if (!PROCBuildCreateDumpCommandLine(g_argvCreateDump, &program, &pidarg, dumpName, dumpType, flags))
         {
             return FALSE;
         }
@@ -3311,8 +3327,8 @@ Parameters:
         WithHeap = 2,
         Triage = 3,
         Full = 4
-    diag
-        true - log createdump diagnostics to console
+    flags
+        See enum
 
 Return:
     TRUE success
@@ -3322,7 +3338,7 @@ BOOL
 PAL_GenerateCoreDump(
     LPCSTR dumpName,
     INT dumpType,
-    BOOL diag)
+    ULONG32 flags)
 {
     std::vector<const char*> argvCreateDump;
     char dumpTypeStr[16];
@@ -3341,7 +3357,7 @@ PAL_GenerateCoreDump(
     }
     char* program = nullptr;
     char* pidarg = nullptr;
-    BOOL result = PROCBuildCreateDumpCommandLine(argvCreateDump, &program, &pidarg, (char*)dumpName, dumpTypeStr, diag, false);
+    BOOL result = PROCBuildCreateDumpCommandLine(argvCreateDump, &program, &pidarg, dumpName, dumpTypeStr, flags);
     if (result)
     {
         result = PROCCreateCrashDump(argvCreateDump);
@@ -3460,7 +3476,7 @@ InitializeFlushProcessWriteBuffers()
         }
     }
 
-#if defined(TARGET_OSX) && defined(HOST_ARM64)
+#ifdef TARGET_OSX
     return TRUE;
 #else
     s_helperPage = static_cast<int*>(mmap(0, GetVirtualPageSize(), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0));
@@ -3490,7 +3506,7 @@ InitializeFlushProcessWriteBuffers()
     }
 
     return status == 0;
-#endif // defined(TARGET_OSX) && defined(HOST_ARM64)
+#endif // TARGET_OSX
 }
 
 #define FATAL_ASSERT(e, msg) \
@@ -3540,7 +3556,7 @@ FlushProcessWriteBuffers()
         status = pthread_mutex_unlock(&flushProcessWriteBuffersMutex);
         FATAL_ASSERT(status == 0, "Failed to unlock the flushProcessWriteBuffersMutex lock");
     }
-#if defined(TARGET_OSX) && defined(HOST_ARM64)
+#ifdef TARGET_OSX
     else
     {
         mach_msg_type_number_t cThreads;
@@ -3566,7 +3582,7 @@ FlushProcessWriteBuffers()
         machret = vm_deallocate(mach_task_self(), (vm_address_t)pThreads, cThreads * sizeof(thread_act_t));
         CHECK_MACH("vm_deallocate()", machret);
     }
-#endif // defined(TARGET_OSX) && defined(HOST_ARM64)
+#endif // TARGET_OSX
 }
 
 /*++

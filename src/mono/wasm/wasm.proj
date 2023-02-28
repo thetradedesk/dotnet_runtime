@@ -12,6 +12,7 @@
     <EmccCmd>emcc</EmccCmd>
     <WasmObjDir>$(ArtifactsObjDir)wasm</WasmObjDir>
     <_EmccDefaultsRspPath>$(NativeBinDir)src\emcc-default.rsp</_EmccDefaultsRspPath>
+    <WasmNativeStrip Condition="'$(ContinuousIntegrationBuild)' == 'true'">false</WasmNativeStrip>
   </PropertyGroup>
 
   <Target Name="CheckEnv">
@@ -81,7 +82,6 @@
 
     <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
       <_EmccFlags Include="@(_EmccCommonFlags)" />
-      <_EmccFlags Include="-s USE_ZLIB=1" />
     </ItemGroup>
 
     <WriteLinesToFile File="$(_EmccDefaultsRspPath)"
@@ -180,7 +180,7 @@
 
     <PropertyGroup>
       <EmccConfigurationFlags Condition="'$(Configuration)' == 'Debug'">-g -Os -s -DENABLE_NETCORE=1 -DDEBUG=1</EmccConfigurationFlags>
-      <EmccConfigurationFlags Condition="'$(Configuration)' == 'Release'">-Oz -DENABLE_NETCORE=1</EmccConfigurationFlags>
+      <EmccConfigurationFlags Condition="'$(Configuration)' == 'Release'">-O2 -DENABLE_NETCORE=1</EmccConfigurationFlags>
       <StripCmd>&quot;$(EMSDK_PATH)/upstream/bin/wasm-opt&quot; --strip-dwarf &quot;$(NativeBinDir)dotnet.wasm&quot; -o &quot;$(NativeBinDir)dotnet.wasm&quot;</StripCmd>
       <WasmObjDir>$(ArtifactsObjDir)wasm</WasmObjDir>
       <WasmVersionFile>$(WasmObjDir)\emcc-version.txt</WasmVersionFile>

@@ -33,7 +33,7 @@ CrashReportWriter::WriteCrashReport(const std::string& dumpFileName)
 {
     std::string crashReportFile(dumpFileName);
     crashReportFile.append(".crashreport.json");
-    printf("Writing crash report to file %s\n", crashReportFile.c_str());
+    printf_status("Writing crash report to file %s\n", crashReportFile.c_str());
     try
     {
         if (!OpenWriter(crashReportFile.c_str())) {
@@ -41,10 +41,11 @@ CrashReportWriter::WriteCrashReport(const std::string& dumpFileName)
         }
         WriteCrashReport();
         CloseWriter();
+        printf_status("Crash report successfully written\n");
     }
     catch (const std::exception& e)
     {
-        fprintf(stderr, "Writing the crash report file FAILED\n");
+        printf_error("Writing the crash report file FAILED\n");
 
         // Delete the partial json file on error
         remove(crashReportFile.c_str());
@@ -84,18 +85,20 @@ CrashReportWriter::WriteCrashReport()
     {
         OpenObject();
         bool crashed = false;
-        if (thread->ManagedExceptionObject() != 0)
+        if (thread->Tid() == m_crashInfo.CrashThread())
         {
             crashed = true;
-            exceptionType = "0x05000000";   // ManagedException
-        }
-        else
-        {
-            if (thread->Tid() == m_crashInfo.CrashThread())
+            if (thread->ManagedExceptionObject() != 0)
             {
-                crashed = true;
+                exceptionType = "0x05000000";   // ManagedException
+            }
+            else
+            {
                 switch (m_crashInfo.Signal())
                 {
+                case 0:
+                    break;
+
                 case SIGILL:
                     exceptionType = "0x50000000";
                     break;
@@ -121,8 +124,11 @@ CrashReportWriter::WriteCrashReport()
                     break;
 
                 case SIGABRT:
-                default:
                     exceptionType = "0x30000000";
+                    break;
+
+                default:
+                    exceptionType = "0x00000000";
                     break;
                 }
             }
@@ -266,7 +272,7 @@ CrashReportWriter::OpenWriter(const char* fileName)
     m_fd = open(fileName, O_WRONLY|O_CREAT|O_TRUNC, S_IWUSR | S_IRUSR);
     if (m_fd == -1)
     {
-        fprintf(stderr, "Could not create json file %s: %d %s\n", fileName, errno, strerror(errno));
+        printf_error("Could not create json file %s: %d %s\n", fileName, errno, strerror(errno));
         return false;
     }
     Write("{\n");

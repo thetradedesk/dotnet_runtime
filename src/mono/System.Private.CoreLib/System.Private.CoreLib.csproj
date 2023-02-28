@@ -32,6 +32,7 @@
     <RuntimeMetadataVersion>v4.0.30319</RuntimeMetadataVersion>
     <!-- Override InformationalVersion during servicing as it's returned via public api. -->
     <InformationalVersion Condition="'$(PreReleaseVersionLabel)' == 'servicing'">$(ProductVersion)</InformationalVersion>
+    <InformationalVersion Condition="'$(StabilizePackageVersion)' == 'true'">$(ProductVersion)</InformationalVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn),0419,0649</NoWarn>
     <Nullable>enable</Nullable>
@@ -345,5 +346,11 @@
       <FileWrites Include="@(EventingSourceFile)" />
     </ItemGroup>
   </Target>
+
+  <!-- Import refererence assembly logic -->
+  <PropertyGroup>
+    <IsSourceProject>true</IsSourceProject>
+  </PropertyGroup>
+  <Import Project="$(RepositoryEngineeringDir)resolveContract.targets" />
 
 </Project>

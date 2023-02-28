@@ -20,14 +20,15 @@
 
     <!-- Don't include the msbuild assemblies with the task -->
     <PackageReference Include="Microsoft.Build.Tasks.Core" Version="$(MicrosoftBuildTasksCoreVersion)" IncludeAssets="compile" />
+    <PackageReference Include="System.Drawing.Common" Version="$(SystemDrawingCommonVersion)" IncludeAssets="compile" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == '$(TargetFrameworkForNETCoreTasks)'">
-    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="$(SystemReflectionMetadataVersion)" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="$(SystemReflectionMetadataLoadContextVersion)" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == '$(TargetFrameworkForNETFrameworkTasks)'">
-    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="$(SystemReflectionMetadataVersion)" PrivateAssets="all" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="$(SystemReflectionMetadataLoadContextVersion)" PrivateAssets="all" />
 
     <!-- match was MonoTargets tasks have -->
     <!-- These versions should not be newer than what Visual Studio MSBuild uses -->

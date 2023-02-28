@@ -86,6 +86,7 @@ BOOL bgc_heap_walk_for_etw_p = FALSE;
 #define LOH_PIN_DECAY 10
 
 uint32_t yp_spin_count_unit = 0;
+uint32_t original_spin_count_unit = 0;
 size_t loh_size_threshold = LARGE_OBJECT_SIZE;
 
 #ifdef GC_CONFIG_DRIVEN
@@ -2725,7 +2726,7 @@ alloc_list gc_heap::poh_alloc_list [NUM_POH_ALIST-1];
 #ifdef DOUBLY_LINKED_FL
 // size we removed with no undo; only for recording purpose
 size_t gc_heap::gen2_removed_no_undo = 0;
-size_t gc_heap::saved_pinned_plug_index = 0;
+size_t gc_heap::saved_pinned_plug_index = INVALID_SAVED_PINNED_PLUG_INDEX;
 #endif //DOUBLY_LINKED_FL
 
 #ifdef FEATURE_EVENT_TRACE
@@ -12728,6 +12729,8 @@ HRESULT gc_heap::initialize_gc (size_t soh_segment_size,
     yp_spin_count_unit = 32 * g_num_processors;
 #endif //MULTIPLE_HEAPS
 
+    original_spin_count_unit = yp_spin_count_unit;
+
 #if defined(__linux__)
     GCToEEInterface::UpdateGCEventStatus(static_cast<int>(GCEventStatus::GetEnabledLevel(GCEventProvider_Default)),
                                          static_cast<int>(GCEventStatus::GetEnabledKeywords(GCEventProvider_Default)),
@@ -13903,7 +13906,20 @@ void gc_heap::adjust_limit (uint8_t* start, size_t limit_size, generation* gen)
                         uint8_t* old_loc = generation_last_free_list_allocated (gen);
 
                         // check if old_loc happens to be in a saved plug_and_gap with a pinned plug after it
-                        uint8_t* saved_plug_and_gap = pinned_plug (pinned_plug_of (saved_pinned_plug_index)) - sizeof(plug_and_gap);
+                        uint8_t* saved_plug_and_gap = nullptr;
+                        if (saved_pinned_plug_index != INVALID_SAVED_PINNED_PLUG_INDEX)
+                        {
+                            saved_plug_and_gap = pinned_plug (pinned_plug_of (saved_pinned_plug_index)) - sizeof(plug_and_gap);
+
+                            dprintf (3333, ("[h%d] sppi: %Id mtos: %Id old_loc: %Ix pp: %Ix(%Id) offs: %Id",
+                                heap_number,
+                                saved_pinned_plug_index,
+                                mark_stack_tos,
+                                old_loc,
+                                pinned_plug (pinned_plug_of (saved_pinned_plug_index)),
+                                pinned_len (pinned_plug_of (saved_pinned_plug_index)),
+                                old_loc - saved_plug_and_gap));
+                        }
                         size_t offset = old_loc - saved_plug_and_gap;
                         if (offset < sizeof(gap_reloc_pair))
                         {
@@ -19972,6 +19988,8 @@ BOOL gc_heap::should_proceed_with_gc()
             // The no_gc mode was already in progress yet we triggered another GC,
             // this effectively exits the no_gc mode.
             restore_data_for_no_gc();
+            
+            memset (&current_no_gc_region_info, 0, sizeof (current_no_gc_region_info));
         }
         else
             return should_proceed_for_no_gc();
@@ -27519,7 +27537,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
 #ifdef DOUBLY_LINKED_FL
     gen2_removed_no_undo = 0;
-    saved_pinned_plug_index = 0;
+    saved_pinned_plug_index = INVALID_SAVED_PINNED_PLUG_INDEX;
 #endif //DOUBLY_LINKED_FL
 
     while (1)
@@ -43024,11 +43042,11 @@ size_t GCHeap::GetPromotedBytes(int heap_index)
 void GCHeap::SetYieldProcessorScalingFactor (float scalingFactor)
 {
     assert (yp_spin_count_unit != 0);
-    int saved_yp_spin_count_unit = yp_spin_count_unit;
-    yp_spin_count_unit = (int)((float)yp_spin_count_unit * scalingFactor / (float)9);
+    uint32_t saved_yp_spin_count_unit = yp_spin_count_unit;
+    yp_spin_count_unit = (uint32_t)((float)original_spin_count_unit * scalingFactor / (float)9);
 
-    // It's very suspicious if it becomes 0
-    if (yp_spin_count_unit == 0)
+    // It's very suspicious if it becomes 0 and also, we don't want to spin too much.
+    if ((yp_spin_count_unit == 0) || (yp_spin_count_unit > 32768))
     {
         yp_spin_count_unit = saved_yp_spin_count_unit;
     }
@@ -44341,6 +44359,8 @@ bool gc_heap::is_pm_ratio_exceeded()
 
 void gc_heap::update_recorded_gen_data (last_recorded_gc_info* gc_info)
 {
+    memset (gc_info->gen_info, 0, sizeof (gc_info->gen_info));
+
 #ifdef MULTIPLE_HEAPS
     for (int i = 0; i < gc_heap::n_heaps; i++)
     {

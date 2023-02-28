@@ -67,7 +67,6 @@
 #include <mach/mach_port.h>
 #include <mach/mach_host.h>
 
-#if defined(HOST_ARM64)
 #include <mach/task.h>
 #include <mach/vm_map.h>
 extern "C"
@@ -84,7 +83,6 @@ extern "C"
             abort();                                                        \
         }                                                                   \
     } while (false)
-#endif // defined(HOST_ARM64)
 
 #endif // __APPLE__
 
@@ -372,7 +370,7 @@ bool GCToOSInterface::Initialize()
     {
         s_flushUsingMemBarrier = TRUE;
     }
-#if !(defined(TARGET_OSX) && defined(HOST_ARM64))
+#ifndef TARGET_OSX
     else
     {
         assert(g_helperPage == 0);
@@ -404,7 +402,7 @@ bool GCToOSInterface::Initialize()
             return false;
         }
     }
-#endif // !(defined(TARGET_OSX) && defined(HOST_ARM64))
+#endif // !TARGET_OSX
 
     InitializeCGroup();
 
@@ -544,7 +542,7 @@ void GCToOSInterface::FlushProcessWriteBuffers()
         status = pthread_mutex_unlock(&g_flushProcessWriteBuffersMutex);
         assert(status == 0 && "Failed to unlock the flushProcessWriteBuffersMutex lock");
     }
-#if defined(TARGET_OSX) && defined(HOST_ARM64)
+#ifdef TARGET_OSX
     else
     {
         mach_msg_type_number_t cThreads;
@@ -570,19 +568,13 @@ void GCToOSInterface::FlushProcessWriteBuffers()
         machret = vm_deallocate(mach_task_self(), (vm_address_t)pThreads, cThreads * sizeof(thread_act_t));
         CHECK_MACH("vm_deallocate()", machret);
     }
-#endif // defined(TARGET_OSX) && defined(HOST_ARM64)
+#endif // TARGET_OSX
 }
 
 // Break into a debugger. Uses a compiler intrinsic if one is available,
 // otherwise raises a SIGTRAP.
 void GCToOSInterface::DebugBreak()
 {
-    // __has_builtin is only defined by clang. GCC doesn't have a debug
-    // trap intrinsic anyway.
-#ifndef __has_builtin
- #define __has_builtin(x) 0
-#endif // __has_builtin
-
 #if __has_builtin(__builtin_debugtrap)
     __builtin_debugtrap();
 #else

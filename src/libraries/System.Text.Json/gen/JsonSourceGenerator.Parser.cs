@@ -40,8 +40,9 @@ namespace System.Text.Json.SourceGeneration
             private const string JsonPropertyNameAttributeFullName = "System.Text.Json.Serialization.JsonPropertyNameAttribute";
             private const string JsonPropertyOrderAttributeFullName = "System.Text.Json.Serialization.JsonPropertyOrderAttribute";
             private const string JsonSerializerContextFullName = "System.Text.Json.Serialization.JsonSerializerContext";
-            private const string JsonSerializerAttributeFullName = "System.Text.Json.Serialization.JsonSerializableAttribute";
             private const string JsonSourceGenerationOptionsAttributeFullName = "System.Text.Json.Serialization.JsonSourceGenerationOptionsAttribute";
+
+            internal const string JsonSerializableAttributeFullName = "System.Text.Json.Serialization.JsonSerializableAttribute";
 
             private const string DateOnlyFullName = "System.DateOnly";
             private const string TimeOnlyFullName = "System.TimeOnly";
@@ -80,6 +81,7 @@ namespace System.Text.Json.SourceGeneration
             private readonly Type _objectType;
             private readonly Type _stringType;
 
+            private readonly Type? _timeSpanType;
             private readonly Type? _dateTimeOffsetType;
             private readonly Type? _byteArrayType;
             private readonly Type? _guidType;
@@ -92,6 +94,7 @@ namespace System.Text.Json.SourceGeneration
             private readonly Type? _jsonValueType;
 
             // Unsupported types
+            private readonly Type _delegateType;
             private readonly Type _typeType;
             private readonly Type _serializationInfoType;
             private readonly Type _intPtrType;
@@ -115,6 +118,14 @@ namespace System.Text.Json.SourceGeneration
             private readonly Dictionary<Type, TypeGenerationSpec> _typeGenerationSpecCache = new();
 
             private readonly HashSet<TypeGenerationSpec> _implicitlyRegisteredTypes = new();
+
+            /// <summary>
+            /// A list of diagnostics emitted at the type level. This is cached and emitted between the processing of context types
+            /// in order to properly retrieve [JsonSerializable] attribute applications for top-level types (since a type might occur
+            /// both at top-level and in nested object graphs, with no guarantee of the order that we will see the type).
+            /// The element tuple types specifies the serializable type, the kind of diagnostic to emit, and the diagnostic message.
+            /// </summary>
+            private readonly List<(Type, DiagnosticDescriptor, string[])> _typeLevelDiagnostics = new();
 
             private JsonKnownNamingPolicy _currentContextNamingPolicy;
 
@@ -194,6 +205,7 @@ namespace System.Text.Json.SourceGeneration
 
                 _booleanType = _metadataLoadContext.Resolve(SpecialType.System_Boolean);
                 _charType = _metadataLoadContext.Resolve(SpecialType.System_Char);
+                _timeSpanType = _metadataLoadContext.Resolve(typeof(TimeSpan));
                 _dateTimeType = _metadataLoadContext.Resolve(SpecialType.System_DateTime);
                 _nullableOfTType = _metadataLoadContext.Resolve(SpecialType.System_Nullable_T);
                 _objectType = _metadataLoadContext.Resolve(SpecialType.System_Object);
@@ -211,6 +223,7 @@ namespace System.Text.Json.SourceGeneration
                 _jsonValueType = _metadataLoadContext.Resolve(JsonValueFullName);
 
                 // Unsupported types.
+                _delegateType = _metadataLoadContext.Resolve(SpecialType.System_Delegate);
                 _typeType = _metadataLoadContext.Resolve(typeof(Type));
                 _serializationInfoType = _metadataLoadContext.Resolve(typeof(Runtime.Serialization.SerializationInfo));
                 _intPtrType = _metadataLoadContext.Resolve(typeof(IntPtr));
@@ -228,7 +241,7 @@ namespace System.Text.Json.SourceGeneration
             {
                 Compilation compilation = _compilation;
                 INamedTypeSymbol jsonSerializerContextSymbol = compilation.GetBestTypeByMetadataName(JsonSerializerContextFullName);
-                INamedTypeSymbol jsonSerializableAttributeSymbol = compilation.GetBestTypeByMetadataName(JsonSerializerAttributeFullName);
+                INamedTypeSymbol jsonSerializableAttributeSymbol = compilation.GetBestTypeByMetadataName(JsonSerializableAttributeFullName);
                 INamedTypeSymbol jsonSourceGenerationOptionsAttributeSymbol = compilation.GetBestTypeByMetadataName(JsonSourceGenerationOptionsAttributeFullName);
                 INamedTypeSymbol jsonConverterOfTAttributeSymbol = compilation.GetBestTypeByMetadataName(JsonConverterOfTFullName);
 
@@ -244,6 +257,11 @@ namespace System.Text.Json.SourceGeneration
 
                 foreach (ClassDeclarationSyntax classDeclarationSyntax in classDeclarationSyntaxList)
                 {
+                    // Ensure context-scoped metadata caches are empty.
+                    Debug.Assert(_typeGenerationSpecCache.Count == 0);
+                    Debug.Assert(_implicitlyRegisteredTypes.Count == 0);
+                    Debug.Assert(_typeLevelDiagnostics.Count == 0);
+
                     CompilationUnitSyntax compilationUnitSyntax = classDeclarationSyntax.FirstAncestorOrSelf<CompilationUnitSyntax>();
                     SemanticModel compilationSemanticModel = compilation.GetSemanticModel(compilationUnitSyntax.SyntaxTree);
 
@@ -285,15 +303,18 @@ namespace System.Text.Json.SourceGeneration
                     INamedTypeSymbol contextTypeSymbol = (INamedTypeSymbol)compilationSemanticModel.GetDeclaredSymbol(classDeclarationSyntax);
                     Debug.Assert(contextTypeSymbol != null);
 
+                    Location contextLocation = contextTypeSymbol.Locations.Length > 0 ? contextTypeSymbol.Locations[0] : Location.None;
+
                     if (!TryGetClassDeclarationList(contextTypeSymbol, out List<string> classDeclarationList))
                     {
                         // Class or one of its containing types is not partial so we can't add to it.
-                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(ContextClassesMustBePartial, Location.None, new string[] { contextTypeSymbol.Name }));
+                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(ContextClassesMustBePartial, contextLocation, new string[] { contextTypeSymbol.Name }));
                         continue;
                     }
 
                     ContextGenerationSpec contextGenSpec = new()
                     {
+                        Location = contextLocation,
                         GenerationOptions = options ?? new JsonSourceGenerationOptionsAttribute(),
                         ContextType = contextTypeSymbol.AsType(_metadataLoadContext),
                         ContextClassDeclarationList = classDeclarationList
@@ -316,14 +337,31 @@ namespace System.Text.Json.SourceGeneration
                         continue;
                     }
 
+                    // Emit type-level diagnostics
+                    foreach ((Type Type, DiagnosticDescriptor Descriptor, string[] MessageArgs) diagnostic in _typeLevelDiagnostics)
+                    {
+                        Type type = diagnostic.Type;
+                        Location location = type.GetDiagnosticLocation();
+
+                        if (location == null)
+                        {
+                            TypeGenerationSpec spec = _typeGenerationSpecCache[type];
+                            location = spec.AttributeLocation;
+                        }
+
+                        location ??= contextLocation;
+                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(diagnostic.Descriptor, location, diagnostic.MessageArgs));
+                    }
+
                     contextGenSpec.ImplicitlyRegisteredTypes.UnionWith(_implicitlyRegisteredTypes);
 
                     contextGenSpecList ??= new List<ContextGenerationSpec>();
                     contextGenSpecList.Add(contextGenSpec);
 
-                    // Clear the cache of generated metadata between the processing of context classes.
+                    // Clear the caches of generated metadata between the processing of context classes.
                     _typeGenerationSpecCache.Clear();
                     _implicitlyRegisteredTypes.Clear();
+                    _typeLevelDiagnostics.Clear();
                 }
 
                 if (contextGenSpecList == null)
@@ -342,6 +380,9 @@ namespace System.Text.Json.SourceGeneration
                     GuidType = _guidType,
                     StringType = _stringType,
                     NumberTypes = _numberTypes,
+#if DEBUG
+                    MetadataLoadContext = _metadataLoadContext,
+#endif
                 };
             }
 
@@ -486,6 +527,8 @@ namespace System.Text.Json.SourceGeneration
                 {
                     typeGenerationSpec.GenerationMode = generationMode;
                 }
+
+                typeGenerationSpec.AttributeLocation = attributeSyntax.GetLocation();
 
                 return typeGenerationSpec;
             }
@@ -866,7 +909,8 @@ namespace System.Text.Json.SourceGeneration
                     }
                 }
                 else if (_knownUnsupportedTypes.Contains(type) ||
-                    ImplementsIAsyncEnumerableInterface(type))
+                    ImplementsIAsyncEnumerableInterface(type) ||
+                    _delegateType.IsAssignableFrom(type))
                 {
                     classType = ClassType.KnownUnsupportedType;
                 }
@@ -877,7 +921,7 @@ namespace System.Text.Json.SourceGeneration
                     if (!type.TryGetDeserializationConstructor(useDefaultCtorInAnnotatedStructs, out ConstructorInfo? constructor))
                     {
                         classType = ClassType.TypeUnsupportedBySourceGen;
-                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(MultipleJsonConstructorAttribute, Location.None, new string[] { $"{type}" }));
+                        _typeLevelDiagnostics.Add((type, MultipleJsonConstructorAttribute, new string[] { $"{type}" }));
                     }
                     else
                     {
@@ -944,7 +988,7 @@ namespace System.Text.Json.SourceGeneration
                                 }
 
                                 spec = GetPropertyGenerationSpec(propertyInfo, isVirtual, generationMode);
-                                CacheMemberHelper();
+                                CacheMemberHelper(propertyInfo.GetDiagnosticLocation());
                             }
 
                             foreach (FieldInfo fieldInfo in currentType.GetFields(bindingFlags))
@@ -955,10 +999,10 @@ namespace System.Text.Json.SourceGeneration
                                 }
 
                                 spec = GetPropertyGenerationSpec(fieldInfo, isVirtual: false, generationMode);
-                                CacheMemberHelper();
+                                CacheMemberHelper(fieldInfo.GetDiagnosticLocation());
                             }
 
-                            void CacheMemberHelper()
+                            void CacheMemberHelper(Location memberLocation)
                             {
                                 CacheMember(spec, ref propGenSpecList, ref ignoredMembers);
 
@@ -972,13 +1016,13 @@ namespace System.Text.Json.SourceGeneration
                                 {
                                     if (dataExtensionPropGenSpec != null)
                                     {
-                                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(MultipleJsonExtensionDataAttribute, Location.None, new string[] { type.Name }));
+                                        _typeLevelDiagnostics.Add((type, MultipleJsonExtensionDataAttribute, new string[] { type.Name }));
                                     }
 
                                     Type propType = spec.TypeGenerationSpec.Type;
                                     if (!IsValidDataExtensionPropertyType(propType))
                                     {
-                                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(DataExtensionPropertyInvalid, Location.None, new string[] { type.Name, spec.ClrName }));
+                                        _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(DataExtensionPropertyInvalid, memberLocation, new string[] { type.Name, spec.ClrName }));
                                     }
 
                                     dataExtensionPropGenSpec = GetOrAddTypeGenerationSpec(propType, generationMode);
@@ -987,13 +1031,13 @@ namespace System.Text.Json.SourceGeneration
 
                                 if (!hasInitOnlyProperties && spec.CanUseSetter && spec.IsInitOnlySetter)
                                 {
-                                    _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(InitOnlyPropertyDeserializationNotSupported, Location.None, new string[] { type.Name }));
+                                    _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(InitOnlyPropertyDeserializationNotSupported, memberLocation, new string[] { type.Name }));
                                     hasInitOnlyProperties = true;
                                 }
 
                                 if (spec.HasJsonInclude && (!spec.CanUseGetter || !spec.CanUseSetter || !spec.IsPublic))
                                 {
-                                    _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(InaccessibleJsonIncludePropertiesNotSupported, Location.None, new string[] { type.Name, spec.ClrName }));
+                                    _sourceGenerationContext.ReportDiagnostic(Diagnostic.Create(InaccessibleJsonIncludePropertiesNotSupported, memberLocation, new string[] { type.Name, spec.ClrName }));
                                 }
                             }
                         }
@@ -1471,6 +1515,7 @@ namespace System.Text.Json.SourceGeneration
                 _knownTypes.Add(_stringType);
 
                 AddTypeIfNotNull(_knownTypes, _byteArrayType);
+                AddTypeIfNotNull(_knownTypes, _timeSpanType);
                 AddTypeIfNotNull(_knownTypes, _dateTimeOffsetType);
                 AddTypeIfNotNull(_knownTypes, _guidType);
                 AddTypeIfNotNull(_knownTypes, _uriType);

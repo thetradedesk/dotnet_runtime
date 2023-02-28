@@ -543,6 +543,7 @@ enum GenTreeFlags : unsigned int
     GTF_QMARK_CAST_INSTOF       = 0x80000000, // GT_QMARK -- Is this a top (not nested) level qmark created for
                                               //             castclass or instanceof?
 
+    GTF_BOX_CLONED              = 0x40000000, // GT_BOX -- this box and its operand has been cloned, cannot assume it to be single-use anymore
     GTF_BOX_VALUE               = 0x80000000, // GT_BOX -- "box" is on a value type
 
     GTF_ICON_HDL_MASK           = 0xF0000000, // Bits used by handle types below
@@ -3638,6 +3639,16 @@ struct GenTreeBox : public GenTreeUnOp
     {
     }
 #endif
+
+    bool WasCloned()
+    {
+        return (gtFlags & GTF_BOX_CLONED) != 0;
+    }
+
+    void SetCloned()
+    {
+        gtFlags |= GTF_BOX_CLONED;
+    }
 };
 
 /* gtField  -- data member ref  (GT_FIELD) */
@@ -5341,14 +5352,21 @@ struct GenTreeBoundsChk : public GenTree
     BasicBlock*     gtIndRngFailBB; // Basic block to jump to for array-index-out-of-range
     SpecialCodeKind gtThrowKind;    // Kind of throw block to branch to on failure
 
+    // Store some information about the array element type that was in the GT_INDEX node before morphing.
+    // Note that this information is also stored in the m_arrayInfoMap of the morphed IND node (that
+    // is marked with GTF_IND_ARR_INDEX), but that can be hard to find.
+    var_types gtInxType; // Save the GT_INDEX type
+
     GenTreeBoundsChk(genTreeOps oper, var_types type, GenTree* index, GenTree* arrLen, SpecialCodeKind kind)
-        : GenTree(oper, type), gtIndex(index), gtArrLen(arrLen), gtIndRngFailBB(nullptr), gtThrowKind(kind)
+        : GenTree(oper, type), gtIndex(index), gtArrLen(arrLen), gtIndRngFailBB(nullptr), gtThrowKind(kind),
+        gtInxType(TYP_UNKNOWN)
     {
         // Effects flags propagate upwards.
         gtFlags |= (index->gtFlags & GTF_ALL_EFFECT);
         gtFlags |= (arrLen->gtFlags & GTF_ALL_EFFECT);
         gtFlags |= GTF_EXCEPT;
     }
+
 #if DEBUGGABLE_GENTREE
     GenTreeBoundsChk() : GenTree()
     {

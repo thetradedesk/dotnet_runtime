@@ -3450,7 +3450,12 @@ main_loop:
 					} else if (del_imethod->method->flags & METHOD_ATTRIBUTE_VIRTUAL && !del->target && !m_class_is_valuetype (del_imethod->method->klass)) {
 						// 'this' is passed dynamically, we need to recompute the target method
 						// with each call
-						del_imethod = get_virtual_method (del_imethod, LOCAL_VAR (call_args_offset + MINT_STACK_SLOT_SIZE, MonoObject*)->vtable);
+						MonoObject *obj = LOCAL_VAR (call_args_offset + MINT_STACK_SLOT_SIZE, MonoObject*);
+						del_imethod = get_virtual_method (del_imethod, obj->vtable);
+						if (m_class_is_valuetype (obj->vtable->klass) && m_class_is_valuetype (del_imethod->method->klass)) {
+							// We are calling into a value type method, `this` needs to be unboxed
+							LOCAL_VAR (call_args_offset + MINT_STACK_SLOT_SIZE, gpointer) = mono_object_unbox_internal (obj);
+						}
 					} else {
 						del->interp_invoke_impl = del_imethod;
 					}
@@ -4877,7 +4882,7 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_CONV_U4_R8)
 #ifdef MONO_ARCH_EMULATE_FCONV_TO_U4
-			LOCAL_VAR (ip [1], gint32) = mono_fconv_u4_2 (LOCAL_VAR (ip [2], double));
+			LOCAL_VAR (ip [1], gint32) = mono_fconv_u4 (LOCAL_VAR (ip [2], double));
 #else
 			LOCAL_VAR (ip [1], gint32) = (guint32) LOCAL_VAR (ip [2], double);
 #endif
@@ -4933,7 +4938,7 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_CONV_U8_R8)
 #ifdef MONO_ARCH_EMULATE_FCONV_TO_U8
-			LOCAL_VAR (ip [1], gint64) = mono_fconv_u8_2 (LOCAL_VAR (ip [2], double));
+			LOCAL_VAR (ip [1], gint64) = mono_fconv_u8 (LOCAL_VAR (ip [2], double));
 #else
 			LOCAL_VAR (ip [1], gint64) = (guint64) LOCAL_VAR (ip [2], double);
 #endif

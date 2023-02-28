@@ -62,6 +62,7 @@ namespace System.Net.Http
         private int _readLength;
 
         private long _idleSinceTickCount;
+        private int _keepAliveTimeoutSeconds; // 0 == no timeout
         private bool _inUse;
         private bool _detachedFromPool;
         private bool _canRetry;
@@ -145,9 +146,14 @@ namespace System.Net.Http
 
         /// <summary>Prepare an idle connection to be used for a new request.</summary>
         /// <param name="async">Indicates whether the coming request will be sync or async.</param>
-        /// <returns>True if connection can be used, false if it is invalid due to receiving EOF or unexpected data.</returns>
+        /// <returns>True if connection can be used, false if it is invalid due to a timeout or receiving EOF or unexpected data.</returns>
         public bool PrepareForReuse(bool async)
         {
+            if (CheckKeepAliveTimeoutExceeded())
+            {
+                return false;
+            }
+
             // We may already have a read-ahead task if we did a previous scavenge and haven't used the connection since.
             // If the read-ahead task is completed, then we've received either EOF or erroneous data the connection, so it's not usable.
             if (_readAheadTask is not null)
@@ -193,9 +199,14 @@ namespace System.Net.Http
         }
 
         /// <summary>Check whether a currently idle connection is still usable, or should be scavenged.</summary>
-        /// <returns>True if connection can be used, false if it is invalid due to receiving EOF or unexpected data.</returns>
+        /// <returns>True if connection can be used, false if it is invalid due to a timeout or receiving EOF or unexpected data.</returns>
         public override bool CheckUsabilityOnScavenge()
         {
+            if (CheckKeepAliveTimeoutExceeded())
+            {
+                return false;
+            }
+
             // We may already have a read-ahead task if we did a previous scavenge and haven't used the connection since.
             if (_readAheadTask is null)
             {
@@ -223,6 +234,15 @@ namespace System.Net.Http
             }
         }
 
+        private bool CheckKeepAliveTimeoutExceeded()
+        {
+            // We intentionally honor the Keep-Alive timeout on all HTTP/1.X versions, not just 1.0. This is to maximize compat with
+            // servers that use a lower idle timeout than the client, but give us a hint in the form of a Keep-Alive timeout parameter.
+            // If _keepAliveTimeoutSeconds is 0, no timeout has been set.
+            return _keepAliveTimeoutSeconds != 0 &&
+                GetIdleTicks(Environment.TickCount64) >= _keepAliveTimeoutSeconds * 1000;
+        }
+
         private ValueTask<int>? ConsumeReadAheadTask()
         {
             if (Interlocked.CompareExchange(ref _readAheadTaskLock, 1, 0) == 0)
@@ -243,6 +263,8 @@ namespace System.Net.Http
         public TransportContext? TransportContext => _transportContext;
 
         public HttpConnectionKind Kind => _pool.Kind;
+
+        private int MaxResponseHeadersLength => (int)Math.Min(int.MaxValue, _pool.Settings._maxResponseHeadersLength * 1024L);
 
         private int ReadBufferSize => _readBuffer.Length;
 
@@ -537,7 +559,7 @@ namespace System.Net.Http
                 }
 
                 // Start to read response.
-                _allowedReadLineBytes = (int)Math.Min(int.MaxValue, _pool.Settings._maxResponseHeadersLength * 1024L);
+                _allowedReadLineBytes = MaxResponseHeadersLength;
 
                 // We should not have any buffered data here; if there was, it should have been treated as an error
                 // by the previous request handling.  (Note we do not support HTTP pipelining.)
@@ -737,6 +759,10 @@ namespace System.Net.Http
                     _pool.InvalidateHttp11Connection(this);
                     _detachedFromPool = true;
                 }
+                else if (response.Headers.TransferEncodingChunked == true)
+                {
+                    responseStream = new ChunkedEncodingReadStream(this, response);
+                }
                 else if (response.Content.Headers.ContentLength != null)
                 {
                     long contentLength = response.Content.Headers.ContentLength.GetValueOrDefault();
@@ -749,10 +775,6 @@ namespace System.Net.Http
                     {
                         responseStream = new ContentLengthReadStream(this, (ulong)contentLength);
                     }
-                }
-                else if (response.Headers.TransferEncodingChunked == true)
-                {
-                    responseStream = new ChunkedEncodingReadStream(this, response);
                 }
                 else
                 {
@@ -1101,11 +1123,59 @@ namespace System.Net.Http
             }
             else
             {
-                // Request headers returned on the response must be treated as custom headers.
                 string headerValue = connection.GetResponseHeaderValueWithCaching(descriptor, value, valueEncoding);
+
+                if (ReferenceEquals(descriptor.KnownHeader, KnownHeaders.KeepAlive))
+                {
+                    // We are intentionally going against RFC to honor the Keep-Alive header even if
+                    // we haven't received a Keep-Alive connection token to maximize compat with servers.
+                    connection.ProcessKeepAliveHeader(headerValue);
+                }
+
+                // Request headers returned on the response must be treated as custom headers.
                 response.Headers.TryAddWithoutValidation(
                     (descriptor.HeaderType & HttpHeaderType.Request) == HttpHeaderType.Request ? descriptor.AsCustomHeader() : descriptor,
                     headerValue);
+            }
+        }
+
+        private void ProcessKeepAliveHeader(string keepAlive)
+        {
+            var parsedValues = new ObjectCollection<NameValueHeaderValue>();
+
+            if (NameValueHeaderValue.GetNameValueListLength(keepAlive, 0, ',', parsedValues) == keepAlive.Length)
+            {
+                foreach (NameValueHeaderValue nameValue in parsedValues)
+                {
+                    // The HTTP/1.1 spec does not define any parameters for the Keep-Alive header, so we are using the de facto standard ones - timeout and max.
+                    if (string.Equals(nameValue.Name, "timeout", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrEmpty(nameValue.Value) &&
+                            HeaderUtilities.TryParseInt32(nameValue.Value, out int timeout) &&
+                            timeout >= 0)
+                        {
+                            // Some servers are very strict with closing the connection exactly at the timeout.
+                            // Avoid using the connection if it is about to exceed the timeout to avoid resulting request failures.
+                            const int OffsetSeconds = 1;
+
+                            if (timeout <= OffsetSeconds)
+                            {
+                                _connectionClose = true;
+                            }
+                            else
+                            {
+                                _keepAliveTimeoutSeconds = timeout - OffsetSeconds;
+                            }
+                        }
+                    }
+                    else if (string.Equals(nameValue.Name, "max", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (nameValue.Value == "0")
+                        {
+                            _connectionClose = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -1457,7 +1527,7 @@ namespace System.Net.Http
             {
                 if (_allowedReadLineBytes < buffer.Length)
                 {
-                    throw new HttpRequestException(SR.Format(SR.net_http_response_headers_exceeded_length, _pool.Settings._maxResponseHeadersLength * 1024L));
+                    throw new HttpRequestException(SR.Format(SR.net_http_response_headers_exceeded_length, MaxResponseHeadersLength));
                 }
 
                 line = default;
@@ -1568,7 +1638,7 @@ namespace System.Net.Http
         {
             if (_allowedReadLineBytes < 0)
             {
-                throw new HttpRequestException(SR.Format(SR.net_http_response_headers_exceeded_length, _pool.Settings._maxResponseHeadersLength * 1024L));
+                throw new HttpRequestException(SR.Format(SR.net_http_response_headers_exceeded_length, MaxResponseHeadersLength));
             }
         }
 
@@ -1747,7 +1817,7 @@ namespace System.Net.Http
             // If the caller provided buffer, and thus the amount of data desired to be read,
             // is larger than the internal buffer, there's no point going through the internal
             // buffer, so just do an unbuffered read.
-            return destination.Length >= _readBuffer.Length ?
+            return destination.Length == 0 || destination.Length >= _readBuffer.Length ?
                 ReadAsync(destination) :
                 ReadBufferedAsyncCore(destination);
         }

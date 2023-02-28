@@ -73,7 +73,7 @@ namespace System.IO.Hashing
             {
                 int remain = StripeSize - held;
 
-                if (source.Length > remain)
+                if (source.Length >= remain)
                 {
                     source.Slice(0, remain).CopyTo(_holdback.AsSpan(held));
                     _state.ProcessStripe(_holdback);
@@ -215,7 +215,7 @@ namespace System.IO.Hashing
             int totalLength = source.Length;
             State state = new State((uint)seed);
 
-            while (source.Length > StripeSize)
+            while (source.Length >= StripeSize)
             {
                 state.ProcessStripe(source);
                 source = source.Slice(StripeSize);

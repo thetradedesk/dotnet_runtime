@@ -7422,7 +7422,11 @@ GenTree* Compiler::gtNewBitCastNode(var_types type, GenTree* arg)
 // Return Value:
 //    Returns GT_ALLOCOBJ node that will be later morphed into an
 //    allocation helper call or local variable allocation on the stack.
-
+//
+//    Node creation can fail for inlinees when the type described by pResolvedToken
+//    can't be represented in jitted code. If this happens, this method will return
+//    nullptr.
+//
 GenTreeAllocObj* Compiler::gtNewAllocObjNode(CORINFO_RESOLVED_TOKEN* pResolvedToken, bool useParent)
 {
     const bool      mustRestoreHandle     = true;
@@ -7931,6 +7935,8 @@ GenTree* Compiler::gtCloneExpr(
                 copy = new (this, GT_BOX)
                     GenTreeBox(tree->TypeGet(), tree->AsOp()->gtOp1, tree->AsBox()->gtAsgStmtWhenInlinedBoxValue,
                                tree->AsBox()->gtCopyStmtWhenInlinedBoxValue);
+                tree->AsBox()->SetCloned();
+                copy->AsBox()->SetCloned();
                 break;
 
             case GT_INTRINSIC:
@@ -8161,6 +8167,7 @@ GenTree* Compiler::gtCloneExpr(
                                  gtCloneExpr(tree->AsBoundsChk()->gtArrLen, addFlags, deepVarNum, deepVarVal),
                                  tree->AsBoundsChk()->gtThrowKind);
             copy->AsBoundsChk()->gtIndRngFailBB = tree->AsBoundsChk()->gtIndRngFailBB;
+            copy->AsBoundsChk()->gtInxType      = tree->AsBoundsChk()->gtInxType;
             break;
 
         case GT_STORE_DYN_BLK:
@@ -13829,6 +13836,13 @@ GenTree* Compiler::gtTryRemoveBoxUpstreamEffects(GenTree* op, BoxRemovalOptions 
         return nullptr;
     }
 
+    // If this box is no longer single-use, bail.
+    if (box->WasCloned())
+    {
+        JITDUMP(" bailing; unsafe to remove box that has been cloned\n");
+        return nullptr;
+    }
+
     // If we're eventually going to return the type handle, remember it now.
     GenTree* boxTypeHandle = nullptr;
     if ((options == BR_REMOVE_AND_NARROW_WANT_TYPE_HANDLE) || (options == BR_DONT_REMOVE_WANT_TYPE_HANDLE))
@@ -18898,10 +18912,45 @@ bool GenTree::isCommutativeHWIntrinsic() const
     assert(gtOper == GT_HWINTRINSIC);
 
 #ifdef TARGET_XARCH
-    return HWIntrinsicInfo::IsCommutative(AsHWIntrinsic()->gtHWIntrinsicId);
-#else
-    return false;
+    const GenTreeHWIntrinsic* node = AsHWIntrinsic();
+    NamedIntrinsic            id   = node->gtHWIntrinsicId;
+
+    if (HWIntrinsicInfo::IsCommutative(id))
+    {
+        return true;
+    }
+
+    if (HWIntrinsicInfo::IsMaybeCommutative(id))
+    {
+        switch (id)
+        {
+            case NI_SSE_Max:
+            case NI_SSE_Min:
+            {
+                return false;
+            }
+
+            case NI_SSE2_Max:
+            case NI_SSE2_Min:
+            {
+                return !varTypeIsFloating(node->GetSimdBaseType());
+            }
+
+            case NI_AVX_Max:
+            case NI_AVX_Min:
+            {
+                return false;
+            }
+
+            default:
+            {
+                unreached();
+            }
+        }
+    }
 #endif // TARGET_XARCH
+
+    return false;
 }
 
 bool GenTree::isContainableHWIntrinsic() const

@@ -16,9 +16,10 @@
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     <NoWarn>$(NoWarn);NU5128</NoWarn> <!-- No Dependencies-->
     <PackageDescription>Provides runtime information required to resolve target framework, platform, and runtime specific implementations of .NETCore packages.</PackageDescription>
-    
+
     <!-- When building from source, ensure the RID we're building for is part of the RID graph -->
     <AdditionalRuntimeIdentifiers Condition="'$(DotNetBuildFromSource)' == 'true'">$(AdditionalRuntimeIdentifiers);$(OutputRID)</AdditionalRuntimeIdentifiers>
+    <ServicingVersion>7</ServicingVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">
@@ -39,23 +40,24 @@
 
   <ItemGroup>
     <Content Condition="'$(AdditionalRuntimeIdentifiers)' == ''" Include="runtime.json" PackagePath="/" />
-    <Content Condition="'$(AdditionalRuntimeIdentifiers)' != ''" Include="$(IntermediateOutputPath)runtime.json" PackagePath="/" />
+    <Content Condition="'$(AdditionalRuntimeIdentifiers)' != ''" Include="$(BaseOutputPath)runtime.json" PackagePath="/" />
     <Content Include="$(PlaceholderFile)" PackagePath="lib/netstandard1.0" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Build.Tasks.Core" Version="$(MicrosoftBuildTasksCoreVersion)" />
+    <PackageReference Include="System.Drawing.Common" Version="$(SystemDrawingCommonVersion)" />
     <PackageReference Include="NuGet.ProjectModel" Version="$(NugetProjectModelVersion)" />
   </ItemGroup>
 
-  <Target Name="GenerateRuntimeJson" Condition="'$(AdditionalRuntimeIdentifiers)' != ''" BeforeTargets="GenerateNuspec">
+  <Target Name="GenerateRuntimeJson" AfterTargets="Build" Condition="'$(AdditionalRuntimeIdentifiers)' != ''">
     <MakeDir Directories="$(IntermediateOutputPath)" />
     <GenerateRuntimeGraph RuntimeGroups="@(RuntimeGroupWithQualifiers)"
                           AdditionalRuntimeIdentifiers="$(AdditionalRuntimeIdentifiers)"
                           AdditionalRuntimeIdentifierParent="$(AdditionalRuntimeIdentifierParent)"
-                          RuntimeJson="$(IntermediateOutputPath)runtime.json"
+                          RuntimeJson="$(BaseOutputPath)runtime.json"
                           UpdateRuntimeFiles="True" />
   </Target>
-  
+
   <Import Project="runtimeGroups.props" />
 </Project>

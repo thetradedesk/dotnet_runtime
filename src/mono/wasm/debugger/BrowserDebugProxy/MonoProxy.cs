@@ -55,6 +55,9 @@ namespace Microsoft.WebAssembly.Diagnostics
             {
                 case "Runtime.consoleAPICalled":
                     {
+                        // Don't process events from sessions we aren't tracking
+                        if (!contexts.TryGetValue(sessionId, out ExecutionContext context))
+                            return false;
                         string type = args["type"]?.ToString();
                         if (type == "debug")
                         {
@@ -68,7 +71,6 @@ namespace Microsoft.WebAssembly.Diagnostics
                                     {
                                         // The optional 3rd argument is the stringified assembly
                                         // list so that we don't have to make more round trips
-                                        ExecutionContext context = GetContext(sessionId);
                                         string loaded = a?[2]?["value"]?.ToString();
                                         if (loaded != null)
                                             context.LoadedFiles = JToken.Parse(loaded).ToObject<string[]>();
@@ -109,7 +111,7 @@ namespace Microsoft.WebAssembly.Diagnostics
 
                 case "Runtime.executionContextCreated":
                     {
-                        SendEvent(sessionId, method, args, token);
+                        await SendEvent(sessionId, method, args, token);
                         JToken ctx = args?["context"];
                         var aux_data = ctx?["auxData"] as JObject;
                         int id = ctx["id"].Value<int>();
@@ -248,7 +250,10 @@ namespace Microsoft.WebAssembly.Diagnostics
                 await AttachToTarget(id, token);
 
             if (!contexts.TryGetValue(id, out ExecutionContext context))
-                return false;
+            {
+                // for Dotnetdebugger.* messages, treat them as handled, thus not passing them on to the browser
+                return method.StartsWith("DotnetDebugger.", StringComparison.OrdinalIgnoreCase);
+            }
 
             switch (method)
             {
@@ -534,7 +539,8 @@ namespace Microsoft.WebAssembly.Diagnostics
                     }
             }
 
-            return false;
+            // for Dotnetdebugger.* messages, treat them as handled, thus not passing them on to the browser
+            return method.StartsWith("DotnetDebugger.", StringComparison.OrdinalIgnoreCase);
         }
         private async Task<bool> CallOnFunction(MessageId id, JObject args, CancellationToken token)
         {
@@ -553,7 +559,7 @@ namespace Microsoft.WebAssembly.Diagnostics
                     args["details"]  = await SdbHelper.GetPointerContent(id, int.Parse(objectId.Value), token);
                     break;
                 case "array":
-                    args["details"]  = await SdbHelper.GetArrayValues(id, int.Parse(objectId.Value), token);
+                    args["details"]  = await SdbHelper.GetArrayValuesProxy(id, int.Parse(objectId.Value), token);
                     break;
                 case "cfo_res":
                 {
@@ -825,7 +831,7 @@ namespace Microsoft.WebAssembly.Diagnostics
                 await SendCommand(sessionId, "Debugger.resume", new JObject(), token);
                 return true;
             }
-            SendEvent(sessionId, "Debugger.paused", o, token);
+            await SendEvent(sessionId, "Debugger.paused", o, token);
 
             return true;
         }
@@ -934,7 +940,7 @@ namespace Microsoft.WebAssembly.Diagnostics
                     foreach (SourceFile source in asm.Sources)
                     {
                         var scriptSource = JObject.FromObject(source.ToScriptSource(context.Id, context.AuxData));
-                        SendEvent(sessionId, "Debugger.scriptParsed", scriptSource, token);
+                        await SendEvent(sessionId, "Debugger.scriptParsed", scriptSource, token);
                     }
                     return asm.GetMethodByToken(method_token);
                 }
@@ -1165,7 +1171,7 @@ namespace Microsoft.WebAssembly.Diagnostics
         {
             JObject scriptSource = JObject.FromObject(source.ToScriptSource(context.Id, context.AuxData));
             Log("debug", $"sending {source.Url} {context.Id} {sessionId.sessionId}");
-            SendEvent(sessionId, "Debugger.scriptParsed", scriptSource, token);
+            await SendEvent(sessionId, "Debugger.scriptParsed", scriptSource, token);
 
             foreach (var req in context.BreakpointRequests.Values)
             {
@@ -1185,18 +1191,18 @@ namespace Microsoft.WebAssembly.Diagnostics
 
             try
             {
-                string[] loaded_files = context.LoadedFiles;
+                string[] loaded_files = await GetLoadedFiles(sessionId, context, token);
 
                 if (loaded_files == null)
                 {
-                    Result loaded = await SendMonoCommand(sessionId, MonoCommands.GetLoadedFiles(), token);
-                    loaded_files = loaded.Value?["result"]?["value"]?.ToObject<string[]>();
+                    Console.WriteLine($"Failed to get the list of loaded files. Managed code debugging won't work due to this.");
                 }
-
-                await
-                foreach (SourceFile source in context.store.Load(sessionId, loaded_files, token).WithCancellation(token))
+                else
                 {
-                    await OnSourceFileAdded(sessionId, source, context, token);
+                    await foreach (SourceFile source in context.store.Load(sessionId, loaded_files, token).WithCancellation(token))
+                    {
+                        await OnSourceFileAdded(sessionId, source, context, token);
+                    }
                 }
             }
             catch (Exception e)
@@ -1207,6 +1213,25 @@ namespace Microsoft.WebAssembly.Diagnostics
             if (!context.Source.Task.IsCompleted)
                 context.Source.SetResult(context.store);
             return context.store;
+
+            async Task<string[]> GetLoadedFiles(SessionId sessionId, ExecutionContext context, CancellationToken token)
+            {
+                if (context.LoadedFiles != null)
+                    return context.LoadedFiles;
+
+                Result loaded = await SendMonoCommand(sessionId, MonoCommands.GetLoadedFiles(), token);
+                if (!loaded.IsOk)
+                {
+                    Console.WriteLine($"Error on mono_wasm_get_loaded_files {loaded}");
+                    return null;
+                }
+
+                string[] files = loaded.Value?["result"]?["value"]?.ToObject<string[]>();
+                if (files == null)
+                    Console.WriteLine($"Error extracting the list of loaded_files from the result of mono_wasm_get_loaded_files: {loaded}");
+
+                return files;
+            }
         }
 
         private async Task<DebugStore> RuntimeReady(SessionId sessionId, CancellationToken token)
@@ -1228,7 +1253,7 @@ namespace Microsoft.WebAssembly.Diagnostics
 
             DebugStore store = await LoadStore(sessionId, token);
             context.ready.SetResult(store);
-            SendEvent(sessionId, "Mono.runtimeReady", new JObject(), token);
+            await SendEvent(sessionId, "Mono.runtimeReady", new JObject(), token);
             SdbHelper.ResetStore(store);
             return store;
         }
@@ -1315,7 +1340,7 @@ namespace Microsoft.WebAssembly.Diagnostics
                 };
 
                 if (sendResolvedEvent)
-                    SendEvent(sessionId, "Debugger.breakpointResolved", JObject.FromObject(resolvedLocation), token);
+                    await SendEvent(sessionId, "Debugger.breakpointResolved", JObject.FromObject(resolvedLocation), token);
             }
 
             req.Locations.AddRange(breakpoints);

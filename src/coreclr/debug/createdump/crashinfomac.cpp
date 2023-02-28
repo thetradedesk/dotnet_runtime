@@ -3,6 +3,8 @@
 
 #include "createdump.h"
 
+int g_readProcessMemoryResult = KERN_SUCCESS;
+
 bool
 CrashInfo::Initialize()
 {
@@ -12,7 +14,7 @@ CrashInfo::Initialize()
     kern_return_t result = ::task_for_pid(mach_task_self(), m_pid, &m_task);
     if (result != KERN_SUCCESS)
     {
-        fprintf(stderr, "task_for_pid(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
+        printf_error("task_for_pid(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
         return false;
     }
     return true;
@@ -37,14 +39,14 @@ CrashInfo::EnumerateAndSuspendThreads()
     kern_return_t result = ::task_suspend(Task());
     if (result != KERN_SUCCESS)
     {
-        fprintf(stderr, "task_suspend(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
+        printf_error("task_suspend(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
         return false;
     }
 
     result = ::task_threads(Task(), &threadList, &threadCount);
     if (result != KERN_SUCCESS)
     {
-        fprintf(stderr, "task_threads(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
+        printf_error("task_threads(%d) FAILED %x %s\n", m_pid, result, mach_error_string(result));
         return false;
     }
 
@@ -127,7 +129,7 @@ CrashInfo::EnumerateMemoryRegions()
         }
         else
         {
-            if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE)) != 0)
+            if (info.share_mode != SM_EMPTY && (info.protection & (VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE)) != 0)
             {
                 MemoryRegion memoryRegion(ConvertProtectionFlags(info.protection), address, address + size, info.offset);
                 m_allMemoryRegions.insert(memoryRegion);
@@ -136,16 +138,20 @@ CrashInfo::EnumerateMemoryRegions()
         }
     }
 
-    // Now find all the modules and add them to the module list
-    for (const MemoryRegion& region : m_allMemoryRegions)
+    // Get the dylinker info and enumerate all the modules
+    struct task_dyld_info dyld_info;
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+    kern_return_t result = ::task_info(Task(), TASK_DYLD_INFO, (task_info_t)&dyld_info, &count);
+    if (result != KERN_SUCCESS)
     {
-        bool found;
-        if (!TryFindDyLinker(region.StartAddress(), region.Size(), &found)) {
-            return false;
-        }
-        if (found) {
-            break;
-        }
+        TRACE("EnumerateMemoryRegions: task_info(TASK_DYLD_INFO) FAILED %x %s\n", result, mach_error_string(result));
+        return false;
+    }
+
+    // Enumerate all the modules in dyld's image cache. VisitModule is called for every module found.
+    if (!EnumerateModules(dyld_info.all_image_info_addr))
+    {
+        return false;
     }
 
     // Filter out the module regions from the memory regions gathered
@@ -195,46 +201,6 @@ CrashInfo::EnumerateMemoryRegions()
     return true;
 }
 
-bool
-CrashInfo::TryFindDyLinker(mach_vm_address_t address, mach_vm_size_t size, bool* found)
-{
-    bool result = true;
-    *found = false;
-
-    if (size > sizeof(mach_header_64))
-    {
-        mach_header_64 header;
-        size_t read = 0;
-        if (ReadProcessMemory((void*)address, &header, sizeof(mach_header_64), &read))
-        { 
-            if (header.magic == MH_MAGIC_64)
-            {
-                TRACE("TryFindDyLinker: found module header at %016llx %08llx ncmds %d sizeofcmds %08x type %02x\n",
-                    address,
-                    size,
-                    header.ncmds,
-                    header.sizeofcmds,
-                    header.filetype);
-
-                if (header.filetype == MH_DYLINKER)
-                {
-                    TRACE("TryFindDyLinker: found dylinker\n");
-                    *found = true;
-
-                    // Enumerate all the modules in dyld's image cache. VisitModule is called for every module found.
-                    result = EnumerateModules(address, &header);
-                }
-            }
-        }
-        else 
-        {
-            TRACE("TryFindDyLinker: ReadProcessMemory header at %p %d FAILED\n", address, read);
-        }
-    }
-
-    return result;
-}
-
 void CrashInfo::VisitModule(MachOModule& module)
 {
     AddModuleInfo(false, module.BaseAddress(), nullptr, module.Name());
@@ -277,6 +243,9 @@ void CrashInfo::VisitSegment(MachOModule& module, const segment_command_64& segm
             uint64_t start = segment.vmaddr + module.LoadBias();
             uint64_t end = start + segment.vmsize;
 
+            // Add this module segment to the set used by the thread unwinding to lookup the module base address for an ip.
+            AddModuleAddressRange(start, end, module.BaseAddress());
+
             // Round to page boundary
             start = start & PAGE_MASK;
             _ASSERTE(start > 0);
@@ -297,9 +266,6 @@ void CrashInfo::VisitSegment(MachOModule& module, const segment_command_64& segm
                 }
                 // Add this module segment to the module mappings list
                 m_moduleMappings.insert(moduleRegion);
-
-                // Add this module segment to the set used by the thread unwinding to lookup the module base address for an ip.
-                AddModuleAddressRange(start, end, module.BaseAddress());
             }
             else
             {
@@ -362,6 +328,7 @@ CrashInfo::ReadProcessMemory(void* address, void* buffer, size_t size, size_t* r
         kern_return_t result = ::vm_read_overwrite(Task(), addressAligned, PAGE_SIZE, (vm_address_t)data, &bytesRead);
         if (result != KERN_SUCCESS || bytesRead != PAGE_SIZE)
         {
+            g_readProcessMemoryResult = result;
             TRACE_VERBOSE("ReadProcessMemory(%p %d): vm_read_overwrite failed bytesLeft %d bytesRead %d from %p: %x %s\n",
                 address, size, bytesLeft, bytesRead, (void*)addressAligned, result, mach_error_string(result));
             break;

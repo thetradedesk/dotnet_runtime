@@ -4939,11 +4939,18 @@ VMPTR_OBJECTHANDLE DacDbiInterfaceImpl::GetObjectForCCW(CORDB_ADDRESS ccwPtr)
 
     OBJECTHANDLE ohCCW = NULL;
 
+#ifdef FEATURE_COMWRAPPERS
+    if (DACTryGetComWrappersHandleFromCCW(ccwPtr, &ohCCW) != S_OK)
+    {
+#endif
 #ifdef FEATURE_COMINTEROP
     ComCallWrapper *pCCW = DACGetCCWFromAddress(ccwPtr);
     if (pCCW)
     {
         ohCCW = pCCW->GetObjectHandle();
+    }
+#endif
+#ifdef FEATURE_COMWRAPPERS
     }
 #endif
 
@@ -5462,6 +5469,12 @@ GENERICS_TYPE_TOKEN DacDbiInterfaceImpl::ResolveExactGenericArgsToken(DWORD     
 
     if (dwExactGenericArgsTokenIndex == 0)
     {
+        // In a rare case of VS4Mac debugging VS4Mac ARM64 optimized code we get a null generics argument token. This workaround
+        // should only cause us to degrade generic types from exact type parameters to approximate or canonical type parameters.
+        if (rawToken == 0)
+        {
+            return rawToken;
+        }
         // In this case the real generics type token is the MethodTable of the "this" object.
         // Note that we want the target address here.
 

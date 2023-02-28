@@ -2953,6 +2953,8 @@ get_module_event_data (
 			module_data->module_flags |= MODULE_FLAGS_NATIVE_MODULE;
 
 		module_data->module_il_path = image && image->filename ? image->filename : "";
+		module_data->module_il_pdb_path = "";
+		module_data->module_il_pdb_age = 0;
 
 		if (image && image->image_info) {
 			MonoPEDirEntry *debug_dir_entry = (MonoPEDirEntry *)&image->image_info->cli_header.datadir.pe_debug;
@@ -2994,6 +2996,7 @@ ep_rt_mono_write_event_module_load (MonoImage *image)
 
 	if (image) {
 		ModuleEventData module_data;
+		memset (&module_data, 0, sizeof (module_data));
 		if (get_module_event_data (image, &module_data)) {
 			FireEtwModuleLoad_V2 (
 				module_data.module_id,
@@ -3037,6 +3040,7 @@ ep_rt_mono_write_event_module_unload (MonoImage *image)
 
 	if (image) {
 		ModuleEventData module_data;
+		memset (&module_data, 0, sizeof (module_data));
 		if (get_module_event_data (image, &module_data)) {
 			FireEtwModuleUnload_V2 (
 				module_data.module_id,
@@ -3095,6 +3099,7 @@ ep_rt_mono_write_event_assembly_load (MonoAssembly *assembly)
 
 	if (assembly) {
 		AssemblyEventData assembly_data;
+		memset (&assembly_data, 0, sizeof (assembly_data));
 		if (get_assembly_event_data (assembly, &assembly_data)) {
 			FireEtwAssemblyLoad_V1 (
 				assembly_data.assembly_id,
@@ -3121,6 +3126,7 @@ ep_rt_mono_write_event_assembly_unload (MonoAssembly *assembly)
 
 	if (assembly) {
 		AssemblyEventData assembly_data;
+		memset (&assembly_data, 0, sizeof (assembly_data));
 		if (get_assembly_event_data (assembly, &assembly_data)) {
 			FireEtwAssemblyUnload_V1 (
 				assembly_data.assembly_id,
@@ -3286,9 +3292,13 @@ ep_rt_mono_write_event_exception_thrown (MonoObject *obj)
 			flags |= EXCEPTION_THROWN_FLAGS_IS_CLS_COMPLIANT;
 			if (exception->inner_ex)
 				flags |= EXCEPTION_THROWN_FLAGS_HAS_INNER;
-			exception_message = ep_rt_utf16_to_utf8_string (mono_string_chars_internal (exception->message), mono_string_length_internal (exception->message));
+			if (exception->message)
+				exception_message = ep_rt_utf16_to_utf8_string (mono_string_chars_internal (exception->message), mono_string_length_internal (exception->message));
 			hresult = exception->hresult;
 		}
+
+		if (exception_message == NULL)
+			exception_message = g_strdup ("");
 
 		if (mono_get_eh_callbacks ()->mono_walk_stack_with_ctx)
 			mono_get_eh_callbacks ()->mono_walk_stack_with_ctx (get_exception_ip_func, NULL, MONO_UNWIND_SIGNAL_SAFE, (void *)&ip);
@@ -5473,6 +5483,7 @@ mono_profiler_module_loaded (
 
 	if (image) {
 		ModuleEventData module_data;
+		memset (&module_data, 0, sizeof (module_data));
 		if (get_module_event_data (image, &module_data))
 			module_path = (const ep_char8_t *)module_data.module_il_path;
 		module_guid = (const ep_char8_t *)mono_image_get_guid (image);
@@ -5524,6 +5535,7 @@ mono_profiler_module_unloaded (
 
 	if (image) {
 		ModuleEventData module_data;
+		memset (&module_data, 0, sizeof (module_data));
 		if (get_module_event_data (image, &module_data))
 			module_path = (const ep_char8_t *)module_data.module_il_path;
 		module_guid = (const ep_char8_t *)mono_image_get_guid (image);

@@ -1350,6 +1350,10 @@ void Module::Destruct()
         m_file->Release();
     }
 
+#if defined(PROFILING_SUPPORTED)
+    delete m_pJitInlinerTrackingMap;
+#endif
+
     // If this module was loaded as domain-specific, then
     // we must free its ModuleIndex so that it can be reused
     FreeModuleIndex();
@@ -9965,16 +9969,16 @@ void Module::RunEagerFixups()
     {
         // For composite images, multiple modules may request initializing eager fixups
         // from multiple threads so we need to lock their resolution.
-        if (compositeNativeImage->EagerFixupsHaveRun())
-        {
-            return;
-        }
         CrstHolder compositeEagerFixups(compositeNativeImage->EagerFixupsLock());
         if (compositeNativeImage->EagerFixupsHaveRun())
         {
+            if (compositeNativeImage->ReadyToRunCodeDisabled())
+                GetReadyToRunInfo()->DisableAllR2RCode();
             return;
         }
         RunEagerFixupsUnlocked();
+        if (GetReadyToRunInfo()->ReadyToRunCodeDisabled())
+            compositeNativeImage->DisableAllR2RCode();
         compositeNativeImage->SetEagerFixupsHaveRun();
     }
     else
@@ -12589,15 +12593,6 @@ void ReflectionModule::CaptureModuleMetaDataToMemory()
         GC_TRIGGERS;
     }
     CONTRACTL_END;
-
-    // If a debugger is attached, then the CLR will still send ClassLoad notifications for dynamic modules,
-    // which mean we still need to keep the metadata available. This is the same as Whidbey.
-    // An alternative (and better) design would be to suppress ClassLoad notifications too, but then we'd
-    // need some way of sending a "catchup" notification to the debugger after we re-enable notifications.
-    if (!CORDebuggerAttached())
-    {
-        return;
-    }
 
     // Do not release the emitter. This is a weak reference.
     IMetaDataEmit *pEmitter = this->GetEmitter();

@@ -60,7 +60,7 @@ seq_point: len:52 clob:c
 il_seq_point: len:0
 
 throw: src1:i len:24
-rethrow: src1:i len:20
+rethrow: src1:i len:24
 start_handler: len:20
 endfinally: len:32
 call_handler: len:16 clob:c
@@ -220,7 +220,6 @@ float_clt_un: dest:i src1:f src2:f len:20
 float_cneq: dest:y src1:f src2:f len:20
 float_cge: dest:y src1:f src2:f len:20
 float_cle: dest:y src1:f src2:f len:20
-float_conv_to_u: dest:i src1:f len:36
 
 # R4 opcodes
 rmove: dest:f src1:f len:4

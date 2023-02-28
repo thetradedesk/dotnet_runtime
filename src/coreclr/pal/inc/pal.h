@@ -432,13 +432,22 @@ PALAPI
 PAL_SetShutdownCallback(
     IN PSHUTDOWN_CALLBACK callback);
 
+// Must be the same as the copy in excep.h and the WriteDumpFlags enum in the diagnostics repo
+enum
+{
+    GenerateDumpFlagsNone = 0x00,
+    GenerateDumpFlagsLoggingEnabled = 0x01,
+    GenerateDumpFlagsVerboseLoggingEnabled = 0x02,
+    GenerateDumpFlagsCrashReportEnabled = 0x04
+};
+
 PALIMPORT
 BOOL
 PALAPI
 PAL_GenerateCoreDump(
     IN LPCSTR dumpName,
     IN INT dumpType,
-    IN BOOL diag);
+    IN ULONG32 flags);
 
 typedef VOID (*PPAL_STARTUP_CALLBACK)(
     char *modulePath,
@@ -2405,6 +2414,7 @@ PALIMPORT
 size_t
 PALAPI
 PAL_GetLogicalProcessorCacheSizeFromOS();
+#define GetLogicalProcessorCacheSizeFromOS PAL_GetLogicalProcessorCacheSizeFromOS
 
 typedef BOOL(*UnwindReadMemoryCallback)(PVOID address, PVOID buffer, SIZE_T size);
 
@@ -2412,7 +2422,7 @@ PALIMPORT BOOL PALAPI PAL_VirtualUnwind(CONTEXT *context, KNONVOLATILE_CONTEXT_P
 
 PALIMPORT BOOL PALAPI PAL_VirtualUnwindOutOfProc(CONTEXT *context, KNONVOLATILE_CONTEXT_POINTERS *contextPointers, PULONG64 functionStart, SIZE_T baseAddress, UnwindReadMemoryCallback readMemoryCallback);
 
-#define GetLogicalProcessorCacheSizeFromOS PAL_GetLogicalProcessorCacheSizeFromOS
+PALIMPORT BOOL PALAPI PAL_GetUnwindInfoSize(SIZE_T baseAddress, ULONG64 ehFrameHdrAddr, UnwindReadMemoryCallback readMemoryCallback, PULONG64 ehFrameStart, PULONG64 ehFrameSize);
 
 /* PAL_CS_NATIVE_DATA_SIZE is defined as sizeof(PAL_CRITICAL_SECTION_NATIVE_DATA) */
 
@@ -4082,15 +4092,11 @@ inline WCHAR *PAL_wcsstr(WCHAR* S, const WCHAR* P)
 }
 #endif
 
-#if defined(__llvm__)
-#define HAS_ROTL __has_builtin(_rotl)
-#define HAS_ROTR __has_builtin(_rotr)
-#else
-#define HAS_ROTL 0
-#define HAS_ROTR 0
+#ifndef __has_builtin
+#define __has_builtin(x) 0
 #endif
 
-#if !HAS_ROTL
+#if !__has_builtin(_rotl)
 /*++
 Function:
 _rotl
@@ -4108,14 +4114,14 @@ unsigned int __cdecl _rotl(unsigned int value, int shift)
     retval = (value << shift) | (value >> (sizeof(int) * CHAR_BIT - shift));
     return retval;
 }
-#endif // !HAS_ROTL
+#endif // !__has_builtin(_rotl)
 
 // On 64 bit unix, make the long an int.
 #ifdef HOST_64BIT
 #define _lrotl _rotl
-#endif // HOST_64BIT
+#endif
 
-#if !HAS_ROTR
+#if !__has_builtin(_rotr)
 
 /*++
 Function:
@@ -4135,7 +4141,7 @@ unsigned int __cdecl _rotr(unsigned int value, int shift)
     return retval;
 }
 
-#endif // !HAS_ROTR
+#endif // !__has_builtin(_rotr)
 
 PALIMPORT int __cdecl abs(int);
 // clang complains if this is declared with __int64

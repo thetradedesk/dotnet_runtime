@@ -1,18 +1,17 @@
 <Project>
 
   <PropertyGroup>
-    <EnablePackageValidation>true</EnablePackageValidation>
     <!-- Don't restore prebuilt packages during sourcebuild. -->
     <DisablePackageBaselineValidation Condition="'$(DotNetBuildFromSource)' == 'true'">true</DisablePackageBaselineValidation>
-    <PackageValidationBaselineVersion Condition="'$(PackageValidationBaselineVersion)' == ''">$([MSBuild]::Subtract($(MajorVersion), 1)).0.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(PackageValidationBaselineVersion)' == ''">6.0.0</PackageValidationBaselineVersion>
     <!-- PackDependsOn is the right hook in a targets file if the NuGet.Build.Tasks.Pack nuget package is used, otherwise
-         BeforePack must be used. Setting both to ensure that we are always running before other targets. --> 
-    <PackDependsOn>AddNETStandardCompatErrorFileForPackaging;IncludeAnalyzersInPackage;$(PackDependsOn)</PackDependsOn>
-    <BeforePack>AddNETStandardCompatErrorFileForPackaging;IncludeAnalyzersInPackage;$(BeforePack)</BeforePack>
+         BeforePack must be used. Setting both to ensure that we are always running before other targets. -->
+    <PackDependsOn>IncludeAnalyzersInPackage;AddNETStandardCompatErrorFileForPackaging;$(PackDependsOn)</PackDependsOn>
+    <BeforePack>IncludeAnalyzersInPackage;AddNETStandardCompatErrorFileForPackaging;$(BeforePack)</BeforePack>
     <SymbolPackageOutputPath>$(PackageOutputPath)</SymbolPackageOutputPath>
     <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);AddRuntimeSpecificFilesToPackage;IncludePrivateProjectReferencesWithPackAttributeInPackage</TargetsForTfmSpecificContentInPackage>
     <TargetsForTfmSpecificDebugSymbolsInPackage>$(TargetsForTfmSpecificDebugSymbolsInPackage);AddRuntimeSpecificSymbolToPackage</TargetsForTfmSpecificDebugSymbolsInPackage>
-    <IncludeBuildOutput Condition="'$(TargetsAnyOS)' != 'true' or '$(ExcludeFromPackage)' == 'true'">false</IncludeBuildOutput>  
+    <IncludeBuildOutput Condition="'$(TargetsAnyOS)' != 'true' or '$(ExcludeFromPackage)' == 'true'">false</IncludeBuildOutput>
     <!-- Don't include target platform specific dependencies, since we use the target platform to represent RIDs instead -->
     <SuppressDependenciesWhenPacking Condition="'$(ExcludeFromPackage)' == 'true' or ('$(TargetsAnyOS)' != 'true' and $([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net5.0')))">true</SuppressDependenciesWhenPacking>
     <PackageDesignerMarkerFile>$(MSBuildThisFileDirectory)useSharedDesignerContext.txt</PackageDesignerMarkerFile>
@@ -24,19 +23,33 @@
                                        '$(IsRIDSpecificProject)' == 'true') and
                                        '$(PreReleaseVersionLabel)' != 'servicing' and
                                        '$(GitHubRepositoryName)' != 'runtimelab'">true</GeneratePackageOnBuild>
+    <GeneratePackageOnBuild Condition="'$(BuildAllConfigurations)' != 'true' and
+                                       '$(IsRIDSpecificProject)' != 'true' and
+                                       '$(PreReleaseVersionLabel)' == 'servicing' and
+                                       '$(GitHubRepositoryName)' != 'runtimelab'">false</GeneratePackageOnBuild>
+    <!-- When in source-build we need to generate all packages when building for all configurations even in servicing. -->
+    <GeneratePackageOnBuild Condition="!$(GeneratePackageOnBuild) and
+                                       '$(BuildAllConfigurations)' == 'true' and
+                                       '$(DotNetBuildFromSource)' == 'true'">true</GeneratePackageOnBuild>
     <!-- Search for the documentation file in the intellisense package and otherwise pick up the generated one. -->
     <LibIntellisenseDocumentationFilePath>$(XmlDocFileRoot)1033\$(AssemblyName).xml</LibIntellisenseDocumentationFilePath>
     <UseIntellisenseDocumentationFile Condition="'$(UseIntellisenseDocumentationFile)' == '' and Exists('$(LibIntellisenseDocumentationFilePath)')">true</UseIntellisenseDocumentationFile>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(ServicingVersion)' != ''">
+  <PropertyGroup Condition="'$(PreReleaseVersionLabel)' == 'servicing'">
+    <!-- If no servicing version is set we need to default to 0 in order for dependency versions to
+    be calculated propertly, if we don't set it to 0, we would get the dependency version using the
+    product Patch Version -->
+    <ServicingVersion Condition="'$(ServicingVersion)' == ''">0</ServicingVersion>
+
     <!-- Always update the package version in servicing. -->
-    <VersionPrefix>$(MajorVersion).$(MinorVersion).$(ServicingVersion)</VersionPrefix>
+    <Version>$(MajorVersion).$(MinorVersion).$(ServicingVersion)</Version>
+    <Version Condition="'$(VersionSuffix)' != ''">$(Version)-$(VersionSuffix)</Version>
     <_IsWindowsDesktopApp Condition="$(WindowsDesktopCoreAppLibrary.Contains('$(AssemblyName);'))">true</_IsWindowsDesktopApp>
     <_IsAspNetCoreApp Condition="$(AspNetCoreAppLibrary.Contains('$(AssemblyName);'))">true</_IsAspNetCoreApp>
-    <_AssemblyInTargetingPack Condition="'$(IsNETCoreAppSrc)' == 'true' or '$(_IsAspNetCoreApp)' == 'true' or '$(_IsWindowsDesktopApp)' == 'true'">true</_AssemblyInTargetingPack>
+    <_AssemblyInTargetingPack Condition="('$(IsNETCoreAppSrc)' == 'true' or '$(IsNetCoreAppRef)' == 'true' or '$(_IsAspNetCoreApp)' == 'true' or '$(_IsWindowsDesktopApp)' == 'true') and '$(TargetFrameworkIdentifier)' != '.NETFramework'">true</_AssemblyInTargetingPack>
     <!-- Assembly version do not get updated in non-netfx ref pack assemblies. -->
-    <AssemblyVersion Condition="'$(_AssemblyInTargetingPack)' != 'true' or '$(TargetFrameworkIdentifier)' == '.NETFramework'">$(MajorVersion).$(MinorVersion).0.$(ServicingVersion)</AssemblyVersion>
+    <AssemblyVersion Condition="'$(_AssemblyInTargetingPack)' != 'true'">$(MajorVersion).$(MinorVersion).0.$(ServicingVersion)</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(EnablePackageValidation)' == 'true'">
@@ -162,9 +175,8 @@
           Condition="'@(AnalyzerReference)' != '' and '$(IncludeMultiTargetRoslynComponentTargets)' == 'true'"
           DependsOnTargets="GenerateMultiTargetRoslynComponentTargetsFile">
     <ItemGroup>
-      <Content Include="$(MultiTargetRoslynComponentTargetsFileIntermediatePath)"
-               PackagePath="build\$(PackageId).targets"
-               Pack="True" />
+      <Content Include="$(MultiTargetRoslynComponentTargetsFileIntermediatePath)" PackagePath="buildTransitive\netstandard2.0\$(PackageId).targets" />
+      <Content Include="$(MultiTargetRoslynComponentTargetsFileIntermediatePath)" PackagePath="buildTransitive\%(NETStandardCompatError.Supported)\$(PackageId).targets" Condition="'@(NETStandardCompatError)' != ''" />
     </ItemGroup>
   </Target>
 
@@ -211,6 +223,7 @@
   </Target>
 </Project>]]>
       </_NETStandardCompatErrorFileContent>
+      <_NETStandardCompatErrorPlaceholderFilePackagePath>buildTransitive$([System.IO.Path]::DirectorySeparatorChar)%(NETStandardCompatError.Supported)</_NETStandardCompatErrorPlaceholderFilePackagePath>
     </PropertyGroup>
 
     <WriteLinesToFile File="$(_NETStandardCompatErrorFilePath)"
@@ -219,12 +232,19 @@
                       WriteOnlyWhenDifferent="true" />
 
     <ItemGroup>
+      <_PackageBuildFile Include="@(None->Metadata('PackagePath'));
+                                  @(Content->Metadata('PackagePath'))" />
+      <_PackageBuildFile PackagePathWithoutFilename="$([System.IO.Path]::GetDirectoryName('%(Identity)'))" />
+
       <None Include="$(_NETStandardCompatErrorFilePath)"
             PackagePath="buildTransitive\%(NETStandardCompatError.Identity)"
             Pack="true" />
+      <!-- Add the placeholder file to the supported target framework buildTransitive folder, if it's empty. -->
       <None Include="$(PlaceholderFile)"
-            PackagePath="buildTransitive\%(NETStandardCompatError.Supported)"
-            Pack="true" />
+            PackagePath="$(_NETStandardCompatErrorPlaceholderFilePackagePath)\"
+            Pack="true"
+            Condition="'@(_PackageBuildFile)' == '' or
+                       !@(_PackageBuildFile->AnyHaveMetadataValue('PackagePathWithoutFilename', '$(_NETStandardCompatErrorPlaceholderFilePackagePath)'))" />
       <FileWrites Include="$(_NETStandardCompatErrorFilePath)" />
     </ItemGroup>
   </Target>
@@ -256,10 +276,16 @@
     </ItemGroup>
   </Target>
 
-  <Target Name="ValidateAssemblyVersionsInRefPack" 
-          Condition="$(_AssemblyInTargetingPack) == 'true' and '$(PreReleaseVersionLabel)' == 'servicing'" 
+  <Target Name="ValidateAssemblyVersionsInRefPack"
+          Condition="'$(SkipValidateAssemblyVersion)' != 'true' and '$(_AssemblyInTargetingPack)' == 'true' and '$(PreReleaseVersionLabel)' == 'servicing'"
           AfterTargets="CoreCompile" >
     <Error Condition="'$(AssemblyVersion)' != '$(LastReleasedStableAssemblyVersion)'" Text="AssemblyVersion should match last released assembly version $(LastReleasedStableAssemblyVersion)" />
+  </Target>
+
+  <Target Name="ValidateServicingVersionIsPropertlySet"
+          Condition="'$(PreReleaseVersionLabel)' == 'servicing' and '$(DotNetBuildFromSource)' != 'true'"
+          AfterTargets="GenerateNuspec">
+    <Error Condition="'$(ServicingVersion)' == '0'" Text="ServicingVersion is set to 0 and it should be an increment of the patch version from the last released package." />
   </Target>
 
 </Project>

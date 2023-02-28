@@ -31,6 +31,7 @@ usage()
   echo "  --os                            Target operating system: windows, Linux, FreeBSD, OSX, MacCatalyst, tvOS,"
   echo "                                  tvOSSimulator, iOS, iOSSimulator, Android, Browser, NetBSD, illumos or Solaris."
   echo "                                  [Default: Your machine's OS.]"
+  echo "  --outputrid <rid>               Optional argument that overrides the target rid name."
   echo "  --projects <value>              Project or solution file(s) to build."
   echo "  --runtimeConfiguration (-rc)    Runtime build configuration: Debug, Release or Checked."
   echo "                                  Checked is exclusive to the CLR runtime. It is the same as Debug, except code is"
@@ -400,6 +401,15 @@ while [[ $# > 0 ]]; do
       shift 1
       ;;
 
+     -outputrid)
+      if [ -z ${2+x} ]; then
+        echo "No value for outputrid is supplied. See help (--help) for supported values." 1>&2
+        exit 1
+      fi
+      arguments="$arguments /p:OutputRid=$(echo "$2" | tr "[:upper:]" "[:lower:]")"
+      shift 2
+      ;;
+
      -portablebuild)
       if [ -z ${2+x} ]; then
         echo "No value for portablebuild is supplied. See help (--help) for supported values." 1>&2
@@ -467,6 +477,10 @@ if [ "$os" = "Browser" ] && [ "$arch" != "wasm" ]; then
 fi
 
 initDistroRid $os $arch $crossBuild $portableBuild
+
+# Disable targeting pack caching as we reference a partially constructed targeting pack and update it later.
+# The later changes are ignored when using the cache.
+export DOTNETSDK_ALLOW_TARGETING_PACK_CACHING=0
 
 # URL-encode space (%20) to avoid quoting issues until the msbuild call in /eng/common/tools.sh.
 # In *proj files (XML docs), URL-encoded string are rendered in their decoded form.

@@ -145,11 +145,12 @@ internal class Xcode
         bool invariantGlobalization,
         bool optimized,
         bool enableRuntimeLogging,
+        bool enableAppSandbox,
         string? diagnosticPorts,
         string? runtimeComponents=null,
         string? nativeMainSource = null)
     {
-        var cmakeDirectoryPath = GenerateCMake(projectName, entryPointLib, asmFiles, asmLinkFiles, workspace, binDir, monoInclude, preferDylibs, useConsoleUiTemplate, forceAOT, forceInterpreter, invariantGlobalization, optimized, enableRuntimeLogging, diagnosticPorts, runtimeComponents, nativeMainSource);
+        var cmakeDirectoryPath = GenerateCMake(projectName, entryPointLib, asmFiles, asmLinkFiles, workspace, binDir, monoInclude, preferDylibs, useConsoleUiTemplate, forceAOT, forceInterpreter, invariantGlobalization, optimized, enableRuntimeLogging, enableAppSandbox, diagnosticPorts, runtimeComponents, nativeMainSource);
         CreateXcodeProject(projectName, cmakeDirectoryPath);
         return Path.Combine(binDir, projectName, projectName + ".xcodeproj");
     }
@@ -201,6 +202,7 @@ internal class Xcode
         bool invariantGlobalization,
         bool optimized,
         bool enableRuntimeLogging,
+        bool enableAppSandbox,
         string? diagnosticPorts,
         string? runtimeComponents=null,
         string? nativeMainSource = null)
@@ -236,13 +238,23 @@ internal class Xcode
         var entitlements = new List<KeyValuePair<string, string>>();
 
         bool hardenedRuntime = false;
-        if (Target == TargetNames.MacCatalyst && !forceAOT) {
+        if (Target == TargetNames.MacCatalyst && !forceAOT)
+        {
             hardenedRuntime = true;
 
             /* for mmmap MAP_JIT */
             entitlements.Add (KeyValuePair.Create ("com.apple.security.cs.allow-jit", "<true/>"));
             /* for loading unsigned dylibs like libicu from outside the bundle or libSystem.Native.dylib from inside */
             entitlements.Add (KeyValuePair.Create ("com.apple.security.cs.disable-library-validation", "<true/>"));
+        }
+
+        if (enableAppSandbox)
+        {
+            hardenedRuntime = true;
+            entitlements.Add (KeyValuePair.Create ("com.apple.security.app-sandbox", "<true/>"));
+
+            // the networking entitlement is necessary to enable communication between the test app and xharness
+            entitlements.Add (KeyValuePair.Create ("com.apple.security.network.client", "<true/>"));
         }
 
         string cmakeLists = Utils.GetEmbeddedResource("CMakeLists.txt.template")
@@ -508,8 +520,15 @@ internal class Xcode
 
         Utils.RunProcess(Logger, "xcodebuild", args.ToString(), workingDir: Path.GetDirectoryName(xcodePrjPath));
 
-        string appPath = Path.Combine(Path.GetDirectoryName(xcodePrjPath)!, config + "-" + sdk,
-            Path.GetFileNameWithoutExtension(xcodePrjPath) + ".app");
+        string appDirectory = Path.Combine(Path.GetDirectoryName(xcodePrjPath)!, config + "-" + sdk);
+        if (!Directory.Exists(appDirectory))
+        {
+            // cmake 3.25.0 seems to have changed the output directory for MacCatalyst, move it back to the old format
+            string appDirectoryWithoutSdk = Path.Combine(Path.GetDirectoryName(xcodePrjPath)!, config);
+            Directory.Move(appDirectoryWithoutSdk, appDirectory);
+        }
+
+        string appPath = Path.Combine(appDirectory, Path.GetFileNameWithoutExtension(xcodePrjPath) + ".app");
 
         if (destination != null)
         {

@@ -108,9 +108,11 @@ jobs:
       # Variables used by arcade to gather asset manifests
       - name: _DotNetPublishToBlobFeed
         value: true
+    - ${{ if eq(variables['System.TeamProject'], 'internal') }}:
+      - group: AzureDevOps-Artifact-Feeds-Pats
     - name: officialBuildIdArg
       value: ''
-    - ${{ if and(eq(variables['System.TeamProject'], 'internal'), ne(variables['Build.Reason'], 'PullRequest')) }}:
+    - ${{ if eq(parameters.isOfficialBuild, true) }}:
       - name: officialBuildIdArg
         value: '/p:OfficialBuildId=$(Build.BuildNumber)'
     - name: enforcePgoArg
@@ -175,6 +177,24 @@ jobs:
         continueOnError: false
         condition: and(succeeded(), in(variables['SignType'], 'real', 'test'))
 
+    - ${{ if ne(variables['System.TeamProject'], 'public') }}:
+      - ${{ if ne(parameters.osGroup, 'windows') }}:
+        - task: Bash@3
+          displayName: Setup Private Feeds Credentials
+          inputs:
+            filePath: $(Build.SourcesDirectory)/eng/common/SetupNugetSources.sh
+            arguments: $(Build.SourcesDirectory)/NuGet.config $Token
+          env:
+            Token: $(dn-bot-dnceng-artifact-feeds-rw)
+      - ${{ if eq(parameters.osGroup, 'windows') }}:
+        - task: PowerShell@2
+          displayName: Setup Private Feeds Credentials
+          inputs:
+            filePath: $(Build.SourcesDirectory)/eng/common/SetupNugetSources.ps1
+            arguments: -ConfigFile $(Build.SourcesDirectory)/NuGet.config -Password $Env:Token
+          env:
+            Token: $(dn-bot-dnceng-artifact-feeds-rw)
+
     - ${{ if in(parameters.osGroup, 'OSX', 'iOS', 'tvOS') }}:
       - script: |
           du -sh $(Build.SourcesDirectory)/*
@@ -238,23 +258,11 @@ jobs:
 
     # Sign diagnostic files on Windows
     - ${{ if and(eq(parameters.osGroup, 'windows'), eq(parameters.signBinaries, true)) }}:
-      - powershell: >-
-          eng\common\build.ps1 -ci -sign -restore -configuration:$(buildConfig) -warnaserror:0 $(officialBuildIdArg)
-          /p:DiagnosticsFilesRoot="$(buildProductRootFolderPath)"
-          /p:SignDiagnostics=true
-          /p:DotNetSignType=$(SignType)
-          -noBl
-          /bl:$(Build.SourcesDirectory)/artifacts/log/$(buildConfig)/SignDiagnostics.binlog
-          -projects $(Build.SourcesDirectory)\eng\empty.csproj
-        displayName: Sign Diagnostic Binaries
-
-      - task: PublishPipelineArtifact@1
-        displayName: Publish Signing Logs
-        inputs:
-          targetPath: '$(Build.SourcesDirectory)/artifacts/log/'
-          artifactName: ${{ format('SignLogs_{0}{1}_{2}_{3}', parameters.osGroup, parameters.osSubgroup, parameters.archType, parameters.buildConfig) }}
-        continueOnError: true
-        condition: always()
+      - template: /eng/pipelines/coreclr/templates/sign-diagnostic-files.yml
+        parameters:
+          basePath: $(buildProductRootFolderPath)
+          isOfficialBuild: ${{ parameters.isOfficialBuild }}
+          timeoutInMinutes: 30
 
     # Builds using gcc are not tested, and clrTools unitests do not publish the build artifacts
     - ${{ if and(ne(parameters.compilerName, 'gcc'), ne(parameters.testGroup, 'clrTools')) }}:
@@ -275,6 +283,7 @@ jobs:
           archType: ${{ parameters.archType }}
           osGroup: ${{ parameters.osGroup }}
           osSubgroup: ${{ parameters.osSubgroup }}
+          isOfficialBuild: ${{ parameters.isOfficialBuild }}
 
     - ${{ if and(ne(parameters.compilerName, 'gcc'), ne(parameters.testGroup, ''), ne(parameters.testGroup, 'clrTools')) }}:
       # Publish test native components for consumption by test execution.
@@ -298,7 +307,7 @@ jobs:
           SecretsFilter: 'dotnetfeed-storage-access-key-1,microsoft-symbol-server-pat,symweb-symbol-server-pat'
 
     # Save packages using the prepare-signed-artifacts format.
-    - ${{ if and(eq(parameters.isOfficialBuild, true), ne(parameters.testGroup, 'clrTools')) }}:
+    - ${{ if and(eq(parameters.isOfficialBuild, true), ne(parameters.testGroup, 'clrTools'), eq(parameters.pgoType, '')) }}:
       - template: /eng/pipelines/common/upload-intermediate-artifacts-step.yml
         parameters:
           name: ${{ parameters.platform }}

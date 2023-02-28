@@ -28,7 +28,7 @@ jobs:
   displayName: Docker Linux
   timeoutInMinutes: 180
   pool:
-    name: NetCore1ESPool-Svc-Public
+    name: NetCore-Svc-Public
     demands: ImageOverride -equals Build.Ubuntu.1804.Amd64.Open
 
   steps:
@@ -50,7 +50,7 @@ jobs:
 
   - bash: |
       cd '$(httpStressProject)'
-      export HTTPSTRESS_CLIENT_ARGS="$HTTPSTRESS_CLIENT_ARGS -http 3.0 -xops 10"
+      export HTTPSTRESS_CLIENT_ARGS="$HTTPSTRESS_CLIENT_ARGS -http 3.0"
       export HTTPSTRESS_SERVER_ARGS="$HTTPSTRESS_SERVER_ARGS -http 3.0"
       docker-compose up --abort-on-container-exit --no-color
     displayName: Run HttpStress - HTTP 3.0
@@ -76,8 +76,8 @@ jobs:
   displayName: Docker NanoServer
   timeoutInMinutes: 150
   pool:
-    name: NetCore1ESPool-Svc-Public
-    demands: ImageOverride -equals Build.Server.Amd64.VS2019.Open
+    name: NetCore-Svc-Public
+    demands: ImageOverride -equals windows.vs2019.amd64.open
 
   steps:
   - checkout: self

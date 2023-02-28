@@ -803,6 +803,60 @@ namespace System.Net.Http.Functional.Tests
                 }
             });
         }
+
+        [Theory]
+        [InlineData(1024, 64, false)]
+        [InlineData(1024, 1024 - 2, false)] // we need at least 2 spare bytes for the next CRLF
+        [InlineData(1024, 1024 - 1, true)]
+        [InlineData(1024, 1024, true)]
+        [InlineData(1024, 1024 + 1, true)]
+        [InlineData(1024 * 1024, 1024 * 1024 - 2, false)]
+        [InlineData(1024 * 1024, 1024 * 1024 - 1, true)]
+        [InlineData(1024 * 1024, 1024 * 1024, true)]
+        public async Task GetAsync_MaxResponseHeadersLength_EnforcedOnTrailingHeaders(int maxResponseHeadersLength, int trailersLength, bool shouldThrow)
+        {
+            await LoopbackServer.CreateClientAndServerAsync(
+                async uri =>
+                {
+                    using HttpClientHandler handler = CreateHttpClientHandler();
+                    using HttpClient client = CreateHttpClient(handler);
+
+                    handler.MaxResponseHeadersLength = maxResponseHeadersLength / 1024;
+
+                    if (shouldThrow)
+                    {
+                        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(uri));
+                    }
+                    else
+                    {
+                        (await client.GetAsync(uri)).Dispose();
+                    }
+                },
+                async server =>
+                {
+                    try
+                    {
+                        const string TrailerName1 = "My-Trailer-1";
+                        const string TrailerName2 = "My-Trailer-2";
+
+                        int trailerOneLength = trailersLength / 2;
+                        int trailerTwoLength = trailersLength - trailerOneLength;
+
+                        await server.AcceptConnectionSendCustomResponseAndCloseAsync(
+                            "HTTP/1.1 200 OK\r\n" +
+                            "Connection: close\r\n" +
+                            "Transfer-Encoding: chunked\r\n" +
+                            "\r\n" +
+                            "4\r\n" +
+                            "data\r\n" +
+                            "0\r\n" +
+                            $"{TrailerName1}: {new string('a', trailerOneLength - TrailerName1.Length - 4)}\r\n" +
+                            $"{TrailerName2}: {new string('b', trailerTwoLength - TrailerName2.Length - 4)}\r\n" +
+                            "\r\n");
+                    }
+                    catch { }
+                });
+        }
     }
 
     // TODO: make generic to support HTTP/2 and HTTP/3.
@@ -837,8 +891,10 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.SupportsAlpn))]
-        public async Task Http2GetAsync_MissingTrailer_TrailingHeadersAccepted()
+        [InlineData(false)]
+        [InlineData(true)]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.SupportsAlpn))]
+        public async Task Http2GetAsync_MissingTrailer_TrailingHeadersAccepted(bool responseHasContentLength)
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
             using (HttpClient client = CreateHttpClient())
@@ -850,7 +906,14 @@ namespace System.Net.Http.Functional.Tests
                 int streamId = await connection.ReadRequestHeaderAsync();
 
                 // Response header.
-                await connection.SendDefaultResponseHeadersAsync(streamId);
+                if (responseHasContentLength)
+                {
+                    await connection.SendResponseHeadersAsync(streamId, endStream: false, headers: new[] { new HttpHeaderData("Content-Length", DataBytes.Length.ToString()) });
+                }
+                else
+                {
+                    await connection.SendDefaultResponseHeadersAsync(streamId);
+                }
 
                 // Response data, missing Trailers.
                 await connection.WriteFrameAsync(MakeDataFrame(streamId, DataBytes));
@@ -888,8 +951,10 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.SupportsAlpn))]
-        public async Task Http2GetAsyncResponseHeadersReadOption_TrailingHeaders_Available()
+        [InlineData(false)]
+        [InlineData(true)]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.SupportsAlpn))]
+        public async Task Http2GetAsyncResponseHeadersReadOption_TrailingHeaders_Available(bool responseHasContentLength)
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
             using (HttpClient client = CreateHttpClient())
@@ -901,7 +966,14 @@ namespace System.Net.Http.Functional.Tests
                 int streamId = await connection.ReadRequestHeaderAsync();
 
                 // Response header.
-                await connection.SendDefaultResponseHeadersAsync(streamId);
+                if (responseHasContentLength)
+                {
+                    await connection.SendResponseHeadersAsync(streamId, endStream: false, headers: new[] { new HttpHeaderData("Content-Length", DataBytes.Length.ToString()) });
+                }
+                else
+                {
+                    await connection.SendDefaultResponseHeadersAsync(streamId);
+                }
 
                 // Response data, missing Trailers.
                 await connection.WriteFrameAsync(MakeDataFrame(streamId, DataBytes));
@@ -1026,7 +1098,7 @@ namespace System.Net.Http.Functional.Tests
         public SocketsHttpHandlerTest_Cookies_Http11(ITestOutputHelper output) : base(output) { }
     }
 
-    [SkipOnPlatform(TestPlatforms.Browser, "ConnectTimeout is not supported on Browser")]
+    [ConditionalClass(typeof(SocketsHttpHandler), nameof(SocketsHttpHandler.IsSupported))]
     public sealed class SocketsHttpHandler_HttpClientHandler_Http11_Cancellation_Test : SocketsHttpHandler_Cancellation_Test
     {
         public SocketsHttpHandler_HttpClientHandler_Http11_Cancellation_Test(ITestOutputHelper output) : base(output) { }
@@ -1131,6 +1203,107 @@ namespace System.Net.Http.Functional.Tests
     public sealed class SocketsHttpHandler_HttpClientHandler_MaxResponseHeadersLength_Test : HttpClientHandler_MaxResponseHeadersLength_Test
     {
         public SocketsHttpHandler_HttpClientHandler_MaxResponseHeadersLength_Test(ITestOutputHelper output) : base(output) { }
+    }
+
+    [ConditionalClass(typeof(SocketsHttpHandler), nameof(SocketsHttpHandler.IsSupported))]
+    public sealed class SocketsHttpHandler_HttpClientHandler_MaxResponseHeadersLength_Http2 : HttpClientHandlerTestBase
+    {
+        public SocketsHttpHandler_HttpClientHandler_MaxResponseHeadersLength_Http2(ITestOutputHelper output) : base(output) { }
+        protected override Version UseVersion => HttpVersion.Version20;
+
+        [Fact]
+        public async Task ServerAdvertisedMaxHeaderListSize_IsHonoredByClient()
+        {
+            const int Limit = 10_000;
+
+            using HttpClientHandler handler = CreateHttpClientHandler();
+            using HttpClient client = CreateHttpClient(handler);
+
+            // We want to test that the client remembered the setting it received from the previous connection.
+            // To do this, we trick the client into using the same HttpConnectionPool for both server connections.
+            Uri lastServerUri = null;
+
+            GetUnderlyingSocketsHttpHandler(handler).ConnectCallback = async (context, ct) =>
+            {
+                Assert.Equal("foo", context.DnsEndPoint.Host);
+
+                Socket socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                try
+                {
+                    await socket.ConnectAsync(lastServerUri.IdnHost, lastServerUri.Port);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            };
+
+            TaskCompletionSource waitingForLastRequest = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            await LoopbackServerFactory.CreateClientAndServerAsync(async uri =>
+            {
+                lastServerUri = uri;
+                uri = new UriBuilder(uri) { Host = "foo", Port = 42 }.Uri;
+
+                // Send a dummy request to ensure the SETTINGS frame has been received.
+                Assert.Equal("Hello world", await client.GetStringAsync(uri));
+
+                HttpRequestMessage request = CreateRequest(HttpMethod.Get, uri, UseVersion, exactVersion: true);
+                request.Headers.Add("Foo", new string('a', Limit));
+
+                Exception ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
+                Assert.Contains(Limit.ToString(), ex.Message);
+
+                request = CreateRequest(HttpMethod.Get, uri, UseVersion, exactVersion: true);
+                for (int i = 0; i < Limit / 40; i++)
+                {
+                    request.Headers.Add($"Foo-{i}", "");
+                }
+
+                ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
+                Assert.Contains(Limit.ToString(), ex.Message);
+
+                await waitingForLastRequest.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+                // Ensure that the connection is still usable for requests that don't hit the limit.
+                Assert.Equal("Hello world", await client.GetStringAsync(uri));
+            },
+            async server =>
+            {
+                var setting = new SettingsEntry { SettingId = SettingId.MaxHeaderListSize, Value = Limit };
+
+                using GenericLoopbackConnection connection = await ((Http2LoopbackServer)server).EstablishConnectionAsync(setting);
+
+                await connection.ReadRequestDataAsync();
+                await connection.SendResponseAsync(content: "Hello world");
+
+                waitingForLastRequest.SetResult();
+
+                // HandleRequestAsync will close the connection
+                await connection.HandleRequestAsync(content: "Hello world");
+            });
+
+            await LoopbackServerFactory.CreateClientAndServerAsync(async uri =>
+            {
+                lastServerUri = uri;
+                uri = new UriBuilder(uri) { Host = "foo", Port = 42 }.Uri;
+
+                HttpRequestMessage request = CreateRequest(HttpMethod.Get, uri, UseVersion, exactVersion: true);
+                request.Headers.Add("Foo", new string('a', Limit));
+
+                Exception ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
+                Assert.Contains(Limit.ToString(), ex.Message);
+
+                // Ensure that the connection is still usable for requests that don't hit the limit.
+                Assert.Equal("Hello world", await client.GetStringAsync(uri));
+            },
+            async server =>
+            {
+                await server.HandleRequestAsync(content: "Hello world");
+            });
+        }
     }
 
     [SkipOnPlatform(TestPlatforms.Browser, "Socket is not supported on Browser")]
@@ -1256,6 +1429,39 @@ namespace System.Net.Http.Functional.Tests
                     });
                 }
             });
+        }
+
+        [Fact]
+        public async Task UpgradeConnection_ResponseStreamSupportsZeroByteReads()
+        {
+            var zeroByteReadIssued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            await LoopbackServer.CreateClientAndServerAsync(async uri =>
+            {
+                using HttpClient client = CreateHttpClient();
+
+                using HttpResponseMessage response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead);
+                using Stream responseStream = await response.Content.ReadAsStreamAsync();
+
+                ValueTask<int> zeroByteReadTask = responseStream.ReadAsync(Memory<byte>.Empty);
+
+                Assert.False(zeroByteReadTask.IsCompleted);
+                await Task.Delay(10);
+                Assert.False(zeroByteReadTask.IsCompleted);
+
+                zeroByteReadIssued.SetResult();
+
+                Assert.Equal(0, await zeroByteReadTask);
+                Assert.Equal(1, await responseStream.ReadAsync(new byte[2]));
+            },
+            server => server.AcceptConnectionAsync(async connection =>
+            {
+                await connection.ReadRequestHeaderAndSendCustomResponseAsync($"HTTP/1.1 101 Switching Protocols\r\nDate: {DateTimeOffset.UtcNow:R}\r\n\r\n");
+
+                await zeroByteReadIssued.Task;
+
+                await connection.Stream.WriteAsync(new byte[] { (byte)'A' });
+            }));
         }
     }
 

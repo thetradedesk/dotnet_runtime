@@ -89,8 +89,16 @@ namespace System.Security.Cryptography.Pkcs
 
                 foreach (CertificateChoiceAsn choice in certChoices)
                 {
-                    Debug.Assert(choice.Certificate.HasValue);
-                    coll.Add(new X509Certificate2(choice.Certificate.Value.ToArray()));
+                    if (choice.Certificate.HasValue)
+                    {
+                        coll.Add(new X509Certificate2(choice.Certificate.Value
+#if NET5_0_OR_GREATER
+                            .Span
+#else
+                            .ToArray()
+#endif
+                            ));
+                    }
                 }
 
                 return coll;
@@ -669,7 +677,7 @@ namespace System.Security.Cryptography.Pkcs
             {
                 foreach (CertificateChoiceAsn cert in _signedData.CertificateSet!)
                 {
-                    if (cert.Certificate!.Value.Span.SequenceEqual(rawData))
+                    if (cert.Certificate is not null && cert.Certificate.Value.Span.SequenceEqual(rawData))
                     {
                         throw new CryptographicException(SR.Cryptography_Cms_CertificateAlreadyInCollection);
                     }
@@ -704,7 +712,7 @@ namespace System.Security.Cryptography.Pkcs
 
                 foreach (CertificateChoiceAsn cert in _signedData.CertificateSet!)
                 {
-                    if (cert.Certificate!.Value.Span.SequenceEqual(rawData))
+                    if (cert.Certificate is not null && cert.Certificate.Value.Span.SequenceEqual(rawData))
                     {
                         PkcsHelpers.RemoveAt(ref _signedData.CertificateSet, idx);
                         Reencode();

@@ -1643,6 +1643,10 @@ check_vtable_covariant_override_impls (MonoClass *klass, MonoMethod **vtable, in
 				break;
 			MonoMethod *prev_impl = cur_class->vtable[slot];
 
+			// if the current class re-abstracted the method, it may not be there.
+			if (!prev_impl)
+				continue;
+
 			if (prev_impl != last_checked_prev_override) {
 				/*
 				 * the new impl should be subsumed by the prior one, ie this
@@ -1742,11 +1746,11 @@ mono_class_setup_vtable_general (MonoClass *klass, MonoMethod **overrides, int o
 		for (int i = 0; i < iface_onum; i++) {
 			MonoMethod *decl = iface_overrides [i*2];
 			MonoMethod *override = iface_overrides [i*2 + 1];
-			if (decl->is_inflated) {
+			if (mono_class_is_gtd (override->klass)) {
+				override = mono_class_inflate_generic_method_full_checked (override, ic, mono_class_get_context (ic), error);
+			} else if (decl->is_inflated) {
 				override = mono_class_inflate_generic_method_checked (override, mono_method_get_context (decl), error);
 				mono_error_assert_ok (error);
-			} else if (mono_class_is_gtd (override->klass)) {
-				override = mono_class_inflate_generic_method_full_checked (override, ic, mono_class_get_context (ic), error);
 			}
 			if (!apply_override (klass, ic, vtable, decl, override, &override_map, &override_class_map, &conflict_map))
 				goto fail;

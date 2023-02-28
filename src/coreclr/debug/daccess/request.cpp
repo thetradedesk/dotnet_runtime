@@ -2791,17 +2791,17 @@ ClrDataAccess::GetGCHeapStaticData(struct DacpGcHeapDetails *detailsData)
     detailsData->card_table = PTR_CDADDR(g_card_table);
     detailsData->mark_array = (CLRDATA_ADDRESS)*g_gcDacGlobals->mark_array;
     detailsData->next_sweep_obj = (CLRDATA_ADDRESS)*g_gcDacGlobals->next_sweep_obj;
-    if (g_gcDacGlobals->saved_sweep_ephemeral_seg != nullptr)
-    {
-        detailsData->saved_sweep_ephemeral_seg = (CLRDATA_ADDRESS)*g_gcDacGlobals->saved_sweep_ephemeral_seg;
-        detailsData->saved_sweep_ephemeral_start = (CLRDATA_ADDRESS)*g_gcDacGlobals->saved_sweep_ephemeral_start;
-    }
-    else
+    if (IsRegion())
     {
         // with regions, we don't have these variables anymore
         // use special value -1 in saved_sweep_ephemeral_seg to signal the region case
         detailsData->saved_sweep_ephemeral_seg = (CLRDATA_ADDRESS)-1;
         detailsData->saved_sweep_ephemeral_start = 0;
+    }
+    else
+    {
+        detailsData->saved_sweep_ephemeral_seg = (CLRDATA_ADDRESS)*g_gcDacGlobals->saved_sweep_ephemeral_seg;
+        detailsData->saved_sweep_ephemeral_start = (CLRDATA_ADDRESS)*g_gcDacGlobals->saved_sweep_ephemeral_start;
     }
     detailsData->background_saved_lowest_address = (CLRDATA_ADDRESS)*g_gcDacGlobals->background_saved_lowest_address;
     detailsData->background_saved_highest_address = (CLRDATA_ADDRESS)*g_gcDacGlobals->background_saved_highest_address;
@@ -4176,12 +4176,18 @@ TADDR ClrDataAccess::DACGetManagedObjectWrapperFromCCW(CLRDATA_ADDRESS ccwPtr)
     return managedObjectWrapperPtr;
 }
 
-HRESULT ClrDataAccess::DACTryGetComWrappersObjectFromCCW(CLRDATA_ADDRESS ccwPtr, OBJECTREF* objRef)
+HRESULT ClrDataAccess::DACTryGetComWrappersHandleFromCCW(CLRDATA_ADDRESS ccwPtr, OBJECTHANDLE* objHandle)
 {
-    if (ccwPtr == 0 || objRef == NULL)
-        return E_INVALIDARG;
+    HRESULT hr = E_FAIL;
+    TADDR ccw, managedObjectWrapperPtr;
+    ULONG32 bytesRead = 0;
+    OBJECTHANDLE handle;
 
-    SOSDacEnter();
+    if (ccwPtr == 0 || objHandle == NULL)
+    {
+        hr = E_INVALIDARG;
+        goto ErrExit;
+    }
 
     if (!DACIsComWrappersCCW(ccwPtr))
     {
@@ -4189,18 +4195,16 @@ HRESULT ClrDataAccess::DACTryGetComWrappersObjectFromCCW(CLRDATA_ADDRESS ccwPtr,
         goto ErrExit;
     }
 
-    TADDR ccw = CLRDATA_ADDRESS_TO_TADDR(ccwPtr);
+    ccw = CLRDATA_ADDRESS_TO_TADDR(ccwPtr);
 
     // Return ManagedObjectWrapper as an OBJECTHANDLE. (The OBJECTHANDLE is guaranteed to live at offset 0).
-    TADDR managedObjectWrapperPtr = DACGetManagedObjectWrapperFromCCW(ccwPtr);
+    managedObjectWrapperPtr = DACGetManagedObjectWrapperFromCCW(ccwPtr);
     if (managedObjectWrapperPtr == NULL)
     {
         hr = E_FAIL;
         goto ErrExit;
     }
 
-    ULONG32 bytesRead = 0;
-    OBJECTHANDLE handle;
     IfFailGo(m_pTarget->ReadVirtual(managedObjectWrapperPtr, (PBYTE)&handle, sizeof(OBJECTHANDLE), &bytesRead));
     if (bytesRead != sizeof(OBJECTHANDLE))
     {
@@ -4208,9 +4212,31 @@ HRESULT ClrDataAccess::DACTryGetComWrappersObjectFromCCW(CLRDATA_ADDRESS ccwPtr,
         goto ErrExit;
     }
 
-    *objRef = ObjectFromHandle(handle);
+    *objHandle = handle;
 
-    SOSDacLeave();
+    return S_OK;
+
+ErrExit: return hr;
+}
+
+HRESULT ClrDataAccess::DACTryGetComWrappersObjectFromCCW(CLRDATA_ADDRESS ccwPtr, OBJECTREF* objRef)
+{
+    HRESULT hr = E_FAIL;
+
+    if (ccwPtr == 0 || objRef == NULL)
+    {
+        hr = E_INVALIDARG;
+        goto ErrExit;
+    }
+
+    OBJECTHANDLE handle;
+    if (DACTryGetComWrappersHandleFromCCW(ccwPtr, &handle) != S_OK)
+    {
+        hr = E_FAIL;
+        goto ErrExit;
+    }
+
+    *objRef = ObjectFromHandle(handle);
 
     return S_OK;
 

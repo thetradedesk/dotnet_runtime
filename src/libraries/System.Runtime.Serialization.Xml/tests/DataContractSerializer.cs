@@ -111,6 +111,19 @@ public static partial class DataContractSerializerTests
         Assert.StrictEqual(DataContractSerializerHelper.SerializeAndDeserialize<DateTime>(DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), @"<dateTime xmlns=""http://schemas.microsoft.com/2003/10/Serialization/"">9999-12-31T23:59:59.9999999Z</dateTime>"), DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc));
     }
 
+
+    [Fact]
+    public static void DCS_BinarySerializationOfDateTime()
+    {
+        DateTime dateTime = DateTime.Parse("2021-01-01");
+        MemoryStream ms = new();
+        DataContractSerializer dcs = new(dateTime.GetType());
+        using (XmlDictionaryWriter writer = XmlDictionaryWriter.CreateBinaryWriter(ms, null, null))
+            dcs.WriteObject(writer, dateTime);
+        var serializedBytes = ms.ToArray();
+        Assert.Equal(72, serializedBytes.Length);
+    }
+
     [Fact]
     public static void DCS_DecimalAsRoot()
     {
@@ -792,7 +805,7 @@ public static partial class DataContractSerializerTests
         Assert.True(y.RO1.Count == 1);
         Assert.True((char)y.RO1[0] == 'x');
     }
-	
+
     [Fact]
     public static void DCS_EnumerableMemberConcreteTypeWithoutDefaultContructor()
     {
@@ -2138,7 +2151,21 @@ public static partial class DataContractSerializerTests
     {
         Assert.Throws<InvalidDataContractException>(() =>
         {
-            (new DataContractSerializer(typeof (RecursiveCollection))).WriteObject(new MemoryStream(), new RecursiveCollection());
+            (new DataContractSerializer(typeof(RecursiveCollection))).WriteObject(new MemoryStream(), new RecursiveCollection());
+        });
+
+        Assert.Throws<InvalidDataContractException>(() =>
+        {
+            (new DataContractSerializer(typeof(RecursiveEnumerable))).WriteObject(new MemoryStream(), new RecursiveEnumerable());
+        });
+
+        // When constructing an element name, we seem to ignore recursion for types marked with [CollectionDataContract].
+        var name = new XsdDataContractExporter().GetRootElementName(typeof(RecursiveCollection));
+
+        // But 'RecursiveEnumerable' is not marked with the attribute. So it takes a code path that looks for this.
+        Assert.Throws<InvalidDataContractException>(() =>
+        {
+            new XsdDataContractExporter().GetRootElementName(typeof(RecursiveEnumerable));
         });
     }
 

@@ -340,15 +340,17 @@ if (CLR_CMAKE_HOST_UNIX)
   #These seem to indicate real issues
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
 
-  if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wno-unused-but-set-variable)
+
+  if (CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-Wno-unknown-warning-option)
+
     # The -ferror-limit is helpful during the porting, it makes sure the compiler doesn't stop
     # after hitting just about 20 errors.
     add_compile_options(-ferror-limit=4096)
 
     # Disabled warnings
     add_compile_options(-Wno-unused-private-field)
-    # Explicit constructor calls are not supported by clang (this->ClassName::ClassName())
-    add_compile_options(-Wno-microsoft)
     # There are constants of type BOOL used in a condition. But BOOL is defined as int
     # and so the compiler thinks that there is a mistake.
     add_compile_options(-Wno-constant-logical-operand)
@@ -363,8 +365,9 @@ if (CLR_CMAKE_HOST_UNIX)
     # to a struct or a class that has virtual members or a base class. In that case, clang
     # may not generate the same object layout as MSVC.
     add_compile_options(-Wno-incompatible-ms-struct)
+
+    add_compile_options(-Wno-reserved-identifier)
   else()
-    add_compile_options(-Wno-unused-but-set-variable)
     add_compile_options(-Wno-unknown-pragmas)
     add_compile_options(-Wno-uninitialized)
     add_compile_options(-Wno-strict-aliasing)
@@ -417,7 +420,7 @@ if (CLR_CMAKE_HOST_UNIX)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0")
         add_compile_options(-arch arm64)
       elseif(CLR_CMAKE_HOST_ARCH_AMD64)
-        set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13")
+      set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14")
         add_compile_options(-arch x86_64)
       else()
         clr_unknown_arch()
@@ -667,6 +670,13 @@ if (CLR_CMAKE_HOST_WIN32)
     endif()
 
 else (CLR_CMAKE_HOST_WIN32)
+    # This is a workaround for upstream issue: https://gitlab.kitware.com/cmake/cmake/-/issues/22995.
+    #
+    # In Clang.cmake, the decision to use single or double hyphen for target and gcc-toolchain
+    # is made based on CMAKE_${LANG}_COMPILER_VERSION, but CMAKE_ASM_COMPILER_VERSION is empty
+    # so it picks up single hyphen options, which new clang versions don't recognize.
+    set (CMAKE_ASM_COMPILER_VERSION "${CMAKE_C_COMPILER_VERSION}")
+
     enable_language(ASM)
 
 endif(CLR_CMAKE_HOST_WIN32)
